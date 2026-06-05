@@ -99,7 +99,7 @@
 
 ```python
 class AuditType(str, Enum):
-    INTERNAL_CONTROL = "internal_control"   # 内控评价
+    INTERNAL_CONTROL = "ic_evaluation"   # 内控评价
     SPECIAL_AUDIT = "special_audit"         # 专项审计
     EXIT_AUDIT = "exit_audit"              # 离任审计
 
@@ -171,7 +171,7 @@ class AuditPlan(BaseModel):
 5. 缺陷认定标准
 
 【审计类型差异】
-- internal_control: 覆盖19个业务循环，按控制活动底表生成设计测试+执行测试方案
+- ic_evaluation: 覆盖19个业务循环，按控制活动底表生成设计测试+执行测试方案
 - special_audit: 聚焦审计目的和重点，检索关联历史方案进行优化
 - exit_audit: 读取岗位职责→在业务方案库中检索强关联内容→在个人方案库中检索通用检查项
   - 审计期间计算：1年<本岗位≤5年→向前计算三年；>5年→向前计算一年
@@ -187,7 +187,7 @@ class AuditPlan(BaseModel):
 
 | 参数 | 内控评价 | 专项审计 | 离任审计 |
 |------|----------|----------|----------|
-| `audit_type` | `internal_control` | `special_audit` | `exit_audit` |
+| `audit_type` | `ic_evaluation` | `special_audit` | `exit_audit` |
 | 必填额外参数 | `business_cycles`, `control_activities` | `sampling_requirements` | `departing_person_info`, `position_duties` |
 | 方案模板 | 内控评价方案模板(含19循环矩阵) | 专项审计方案模板 | 离任审计方案模板 |
 | 知识库分区 | `kb_ic_plan` | `kb_sa_plan` | `kb_ea_plan` + `kb_ea_position` |
@@ -349,7 +349,7 @@ class AuditCheckAgentOutput(BaseModel):
 ```python
 class InterviewAgentInput(BaseModel):
     task_id: str
-    calling_module: str           # 调用模块: internal_control/special_audit/exit_audit/integrity_supervision
+    calling_module: str           # 调用模块: ic_evaluation/special_audit/exit_audit/integrity
 
     # 访谈上下文
     audit_plan_summary: str       # 审计方案摘要（含需访谈的业务领域）
@@ -414,7 +414,7 @@ class InterviewAgentOutput(BaseModel):
 
 | 参数 | 内控评价 | 专项审计 | 离任审计 | 廉洁监察 |
 |------|----------|----------|----------|----------|
-| `calling_module` | `internal_control` | `special_audit` | `exit_audit` | `integrity_supervision` |
+| `calling_module` | `ic_evaluation` | `special_audit` | `exit_audit` | `integrity` |
 | `question_focus_areas` | 控制活动设计+执行 | 审计重点领域 | 个人行为+业务问题 | 舞弊行为+利益冲突 |
 | 知识库分区 | `kb_ic_interview` | `kb_sa_interview` | `kb_ea_interview` | `kb_intake` (复用) |
 | 人员匹配方式 | 按业务循环→岗位 | 按审计重点→部门→岗位 | 按被审计人→上下级→关联岗位 | 按案件涉及范围 |
@@ -931,7 +931,7 @@ class RemediationIssueRecord(BaseModel):
 class RemediationAgentInput(BaseModel):
     task_id: str
     operation: str               # plan_review / evidence_review / overdue_check
-    issue_source: str            # 来源模块: 内控评价/廉洁监察/专项审计/离任审计/行为风险
+    issue_source: str            # 来源模块: ic_evaluation/integrity/special_audit/exit_audit/behavior_risk
     issue_data: dict             # 30+字段的问题数据（见需求文档 9.4.1）
     remediation_plan: Optional[str]       # 整改计划（整改部门提交后）
     remediation_evidence: Optional[List[str]]  # 整改证据文件
@@ -999,7 +999,7 @@ class RemediationAgentOutput(BaseModel):
 ```json
 {
   "protocol_version": "1.0",
-  "source_module": "integrity_supervision|risk_monitoring|internal_control|special_audit|exit_audit|behavioral_risk",
+  "source_module": "integrity|risk_monitor|ic_evaluation|special_audit|exit_audit|behavior_risk|trade_secret|business_assigned",
   "issue": {
     "issue_id": "unique-issue-id",
     "source_project_id": "原始审计项目编号",

@@ -517,26 +517,28 @@ refresh_token 过期 → 重新登录
 请求体：
 ```json
 {
-  "client": "ecovacs",
+  "business_unit": "ecovacs",
   "business_cycle": "采购付款循环",
-  "scene_level1": "供应商管理",
-  "scene_level2": "供应商准入",
-  "scene_level3": "围串标风险",
+  "channel": "电商",
+  "format": "零售",
+  "department": "采购部",
+  "position": "采购经理",
+  "personnel_info": "张三",
+  "level1_scene": "供应商管理",
+  "level2_scene": "供应商准入",
+  "level3_scene": "围串标风险",
   "sql_statement": "SELECT supplier_name, COUNT(*) FROM bid_records WHERE ...",
-  "risk_level": "high",
+  "risk_level": "高",
   "threshold": 3,
   "monitor_frequency": "daily",
-  "require_external_data": false,
-  "channels": ["电商", "线下"],
-  "business_formats": ["零售"],
-  "departments": ["采购部"],
-  "positions": ["采购经理"]
+  "monitor_business_unit": "ecovacs",
+  "use_external_data": false
 }
 ```
 
 **GET /api/v1/risk-monitor/rules** — 查询风险规则列表
 
-查询参数：`client`、`risk_level`、`business_cycle`、`is_active`、`page`、`page_size`
+查询参数：`business_unit`、`risk_level`、`business_cycle`、`status`、`page`、`page_size`
 
 **GET /api/v1/risk-monitor/rules/{rule_id}** — 查询规则详情
 
@@ -547,7 +549,7 @@ refresh_token 过期 → 重新登录
 请求体：
 ```json
 {
-  "is_active": false,
+  "status": "inactive",
   "reason": "业务场景变更，该规则不再适用"
 }
 ```
@@ -571,7 +573,7 @@ refresh_token 过期 → 重新登录
 
 **GET /api/v1/risk-monitor/alerts** — 查询风险预警列表
 
-查询参数：`client`、`risk_level`、`risk_type`、`status`、`start_date`、`end_date`、`page`、`page_size`
+查询参数：`business_unit`、`risk_level`、`risk_type`、`status`、`start_date`、`end_date`、`page`、`page_size`
 
 响应：
 ```json
@@ -583,13 +585,13 @@ refresh_token 过期 → 重新登录
         "id": "alert-001",
         "rule_id": "rule-001",
         "rule_name": "围串标风险监控",
-        "risk_level": "high",
+        "risk_level": "高",
         "risk_type": "舞弊风险",
         "analysis_subject": "XX供应商",
-        "subject_type": "supplier",
+        "subject_type": "供应商",
         "alert_detail": "在过去30天内参与3次以上投标且中标率异常...",
         "involved_amount": 500000.00,
-        "status": "pending_review",
+        "status": "pending",
         "created_at": "2026-05-19T08:00:00Z"
       }
     ],
@@ -609,7 +611,7 @@ refresh_token 过期 → 重新登录
 {
   "review_result": "confirmed",
   "comment": "确认为异常，建议推送廉洁监察立案",
-  "corrected_risk_level": "critical"
+  "corrected_risk_level": "高"
 }
 ```
 
@@ -617,7 +619,7 @@ refresh_token 过期 → 重新登录
 
 **GET /api/v1/risk-monitor/reports** — 查询风险分析报告列表
 
-查询参数：`client`、`report_type`（daily/weekly/monthly）、`start_date`、`end_date`、`page`、`page_size`
+查询参数：`business_unit`、`report_type`（daily/weekly/monthly）、`start_date`、`end_date`、`page`、`page_size`
 
 **GET /api/v1/risk-monitor/reports/{report_id}** — 查询报告详情（含图表数据）
 
@@ -637,14 +639,14 @@ refresh_token 过期 → 重新登录
 
 **GET /api/v1/risk-monitor/push-records** — 查询推送记录
 
-查询参数：`alert_id`、`target_module`（cases/internal_control/trade_secret）、`status`、`page`、`page_size`
+查询参数：`alert_id`、`target_module`（integrity/ic_evaluation/trade_secret/business_dept）、`status`、`page`、`page_size`
 
 **POST /api/v1/risk-monitor/alerts/{alert_id}/push** — 手动推送风险至指定模块
 
 请求体：
 ```json
 {
-  "target_module": "cases",
+  "target_module": "integrity",
   "push_reason": "风险等级高，需立案调查"
 }
 ```
@@ -659,8 +661,8 @@ refresh_token 过期 → 重新登录
 ```json
 {
   "alert_id": "alert-001",
-  "source_module": "cases",
-  "disposition_status": "case_filed",
+  "source_module": "integrity",
+  "disposition_status": "disposed",
   "case_id": "c-001",
   "result_summary": "已立案调查"
 }
@@ -1174,7 +1176,7 @@ AI 对业务数据、行为数据（含天眼查外部数据、业务系统数�
 {
   "project_year": 2026,
   "client": "ecovacs",
-  "source": "internal_control",
+  "source": "ic_evaluation",
   "audit_project_id": "AP-001",
   "audit_project_name": "2026年度Q1内控评价",
   "finding_code": "IC-2026-001",
@@ -1197,7 +1199,7 @@ AI 对业务数据、行为数据（含天眼查外部数据、业务系统数�
 | 参数 | 说明 |
 |------|------|
 | `client` | 事业部 |
-| `source` | 来源：internal_control/special_audit/exit_audit/case_handling/risk_monitor |
+| `source` | 来源：ic_evaluation/integrity/trade_secret/behavior_risk/special_audit/exit_audit/risk_monitor/business_assigned |
 | `status` | 状态（见下方状态说明） |
 | `responsible_department` | 责任部门 |
 | `responsible_person` | 责任人 |
@@ -1364,14 +1366,14 @@ AI 依据前期整改计划，对提交的附件进行初审判断。
 
 | 状态 | 含义 | 触发条件 |
 |------|------|----------|
-| `pending_dispatch` | 问题待推送 | 审计问题清单同步至整改智能体后 |
-| `plan_pending` | 计划待提交 | 审计组长下发整改任务，整改部门未上传计划 |
-| `plan_under_review` | 计划待审批 | 整改部门上传计划，审计跟进人未审核 |
-| `rectification_pending` | 整改答复待提交 | 审计人员已审核计划，整改部门未上传证据 |
-| `rectified_under_review` | 已整改待复核 | 整改部门已上传证据，审计跟进人未审核 |
+| `pending_push` | 问题待推送 | 审计问题清单同步至整改智能体后 |
+| `pending_plan` | 计划待提交 | 审计组长下发整改任务，整改部门未上传计划 |
+| `plan_pending_approval` | 计划待审批 | 整改部门上传计划，审计跟进人未审核 |
+| `pending_evidence` | 整改答复待提交 | 审计人员已审核计划，整改部门未上传证据 |
+| `pending_review` | 已整改待复核 | 整改部门已上传证据，审计跟进人未审核 |
 | `completed` | 整改完成 | 审计跟进人复核通过 |
-| `returned` | 退回重改 | AI 复核或审计复核不通过 |
-| `cancelled` | 已作废 | 手动作废，留痕备查 |
+| `returned_for_rework` | 退回重改 | AI 复核或审计复核不通过 |
+| `voided` | 已作废 | 手动作废，填写作废原因，留痕备查 |
 
 ---
 
@@ -1393,11 +1395,14 @@ AI 依据前期整改计划，对提交的附件进行初审判断。
     { "type": "analysis", "name": "分析报告知识库", "doc_count": 89, "last_synced": "2026-05-18T00:00:00Z" },
     { "type": "disposition", "name": "处置分流知识库", "doc_count": 73, "last_synced": "2026-05-17T00:00:00Z" },
     { "type": "enforcement", "name": "处罚执行知识库", "doc_count": 45, "last_synced": "2026-05-16T00:00:00Z" },
-    { "type": "internal_control", "name": "内控评价知识库", "doc_count": 210, "last_synced": "2026-05-18T00:00:00Z" },
+    { "type": "ic_evaluation", "name": "内控评价知识库", "doc_count": 210, "last_synced": "2026-05-18T00:00:00Z" },
     { "type": "special_audit", "name": "专项审计知识库", "doc_count": 67, "last_synced": "2026-05-17T00:00:00Z" },
     { "type": "exit_audit", "name": "离任审计知识库", "doc_count": 42, "last_synced": "2026-05-16T00:00:00Z" },
     { "type": "trade_secret", "name": "商业秘密知识库", "doc_count": 35, "last_synced": "2026-05-15T00:00:00Z" },
-    { "type": "behavior_risk", "name": "行为风险知识库", "doc_count": 28, "last_synced": "2026-05-15T00:00:00Z" }
+    { "type": "behavior_risk", "name": "行为风险知识库", "doc_count": 28, "last_synced": "2026-05-15T00:00:00Z" },
+    { "type": "risk_monitor", "name": "风险监控知识库", "doc_count": 55, "last_synced": "2026-05-18T00:00:00Z" },
+    { "type": "improvement", "name": "持续改善知识库", "doc_count": 18, "last_synced": "2026-05-16T00:00:00Z" },
+    { "type": "common", "name": "公共知识库", "doc_count": 85, "last_synced": "2026-05-18T00:00:00Z" }
   ]
 }
 ```

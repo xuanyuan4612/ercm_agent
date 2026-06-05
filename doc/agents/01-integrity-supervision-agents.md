@@ -303,12 +303,12 @@ from datetime import datetime
 from enum import Enum
 
 class FraudSource(str, Enum):
-    """案件来源"""
-    GZH = "GZ"       # 公众号
-    MANUAL = "SD"    # 手动
-    EMAIL = "YX"     # 邮箱
-    AGENT = "ZN"     # 智能体推送
-    PHONE = "DH"     # 电话
+    """案件来源（DB存储值，task_id前缀通过来源缩写映射生成）"""
+    WECHAT = "wechat"     # 公众号 → task_id前缀: GZ
+    MANUAL = "manual"     # 手动录入 → task_id前缀: SD
+    EMAIL = "email"       # 邮箱举报 → task_id前缀: YX
+    AGENT = "agent"       # 智能体推送 → task_id前缀: ZN
+    PHONE = "phone"       # 电话举报 → task_id前缀: DH
 
 class Client(str, Enum):
     """事业部"""
@@ -938,7 +938,7 @@ DeepSeek 上下文窗口 64K tokens，intake-agent 分配如下：
   "source": "risk_control_system",
   "case_data": {
     "task_id": "GZ2025121102",
-    "fraud_source": "GZ",
+    "fraud_source": "wechat",
     "client": "ecovacs",
     "fraud_event_detail": "...",
     "reported_staff_names": ["张某", "李某"],
