@@ -6,7 +6,7 @@
 
 ## 概述
 
-赫尔墨斯（Hermes）—— 科沃斯集团企业风控 AI 智能体。采用 LLM + RAG + 多智能体协作（A2A），覆盖 8 大业务模块：廉洁监督 → 风险监测 → 内控评价 → 专项审计 → 离任审计 → 商业秘密 → 行为风险 → 持续改进。
+赫尔墨斯（Hermes）—— 科沃斯集团企业风控 AI 智能体。采用 LLM + RAG + 多智能体协作（A2A），覆盖 8 大业务模块：廉洁监察 → 风险监控 → 内控评价 → 专项审计 → 离任审计 → 商业秘密 → 行为风险 → 持续改善。
 
 ## 目录结构
 
@@ -31,6 +31,8 @@
 | 模块索引与模块间流程 | `doc/modules/README.md` | 依赖关系图、共享基础设施清单 |
 | CI/CD 流水线设计 | `doc/architecture-design.md` §6.7 | GitLab CI，4 个阶段：Lint → Test → Build → Deploy |
 | 测试策略 | `doc/architecture-design.md` §8.9 | pytest、异步、5 种测试类型 |
+| 简化部署方案 (100 用户) | `doc/deployment-plan-100users.md` | Docker Compose，适合无专职运维团队 |
+| 生产补充章节 | `doc/architecture-design.md` §8.18-8.24 | 成本、知识库初始化、应急预案、环境方案、模型管理等 |
 
 ## 技术栈（规划中）
 

@@ -14,8 +14,10 @@ doc/
 ├── architecture-design.md       # [150KB] System architecture — LangGraph, K8s, CI/CD, multi-modal, observability
 ├── data-design.md               # [88KB] Data model — ~40 PostgreSQL tables, pgvector schema, RBAC, audit
 ├── api-design.md                # [57KB] REST API spec — endpoints, Pydantic schemas, auth flows
+├── deployment-plan-100users.md  # [NEW] Simplified deployment for 100 users/5TB — Docker Compose, no K8s
 ├── modules/                     # Per-module detailed requirements
 │   ├── README.md                # Module index, dependency graph, shared infrastructure
+│   ├── 00-index-flowcharts.md
 │   ├── 01-integrity-supervision.md
 │   ├── 02-risk-monitoring.md
 │   ├── 03-internal-control-evaluation.md
@@ -36,7 +38,11 @@ doc/
 | What are the API routes? | `api-design.md` | grouped by domain |
 | Module X details? | `modules/0X-*.md` | one file per module |
 | How do modules relate? | `modules/README.md` | dependency graph + shared infra |
-| How to deploy? | `architecture-design.md` | §6 (deployment, K8s, Helm) |
+| How to deploy? (10K users) | `architecture-design.md` | §6 (K8s, Helm, production cluster) |
+| How to deploy? (100 users) | `deployment-plan-100users.md` | §2-6 (Docker Compose, simplified) |
+| How much does it cost? | `architecture-design.md` | §8.18 (cost estimation) |
+| How to bootstrap knowledge base? | `architecture-design.md` | §8.19 (KB initialization) |
+| Emergency procedures? | `architecture-design.md` | §8.20 (SOPs) |
 | How to test? | `architecture-design.md` | §8.9 (5 test types) |
 | CI/CD pipeline? | `architecture-design.md` | §6.7 (GitLab CI, 4 stages) |
 
