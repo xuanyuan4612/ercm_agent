@@ -1,0 +1,58 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*.egg-info
+.eggs
+dist
+build
+*.egg
+
+# Virtual environments
+.venv
+venv
+env
+.env
+.env.local
+
+# IDE
+.idea
+.vscode
+.cursor
+.codebuddy
+
+# CodeGraph
+.codegraph
+.sisyphus
+
+# Tests
+tests
+.pytest_cache
+.coverage
+htmlcov
+
+# CI/CD
+.github
+k8s
+
+# Docs
+doc
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Alembic (migrations are included in image, but not the ini with local config)
+alembic.ini

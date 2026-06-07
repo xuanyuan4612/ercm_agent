@@ -218,3 +218,18 @@ __marimo__/
 .streamlit/secrets.toml
 
 .idea
+.venv
+.sisyphus
+
+# Hermes specific
+.env.*
+!.env.example
+*.tmp
+uploads/
+logs/
+hermes_prompts_cache/
+*.key
+*.pem
+k8s/secrets/
+.sisyphus/
+uv.lock
