@@ -52,8 +52,13 @@ jobs:
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
+    environment: hermes-agent
 
     steps:
+      - name: Debug Secrets
+        run: |
+          echo "Host: ${{ secrets.VM_HOST }}"
+          echo "User: ${{ secrets.VM_USER }}"
       - name: SSH 到虚拟机并更新容器
         uses: appleboy/ssh-action@v1
         with:
