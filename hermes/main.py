@@ -29,12 +29,77 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """应用生命周期管理"""
     setup_logging()
     logger.info("hermes_starting", version=settings.APP_VERSION, env=settings.ENV)
-    # TODO: 初始化 Redis 连接池
-    # TODO: 初始化 Elasticsearch 客户端
-    # TODO: 初始化 MinIO 客户端
+
+    # 初始化 Redis 连接池（可选依赖，仅当配置了 Redis 时才初始化）
+    try:
+        import redis.asyncio as redis
+        redis_pool = redis.ConnectionPool.from_url(
+            settings.REDIS_CLUSTER_NODES.split(",")[0],
+            password=settings.REDIS_PASSWORD.get_secret_value() or None,
+            max_connections=settings.REDIS_MAX_CONNECTIONS,
+            decode_responses=True,
+        )
+        app.state.redis = redis.Redis(connection_pool=redis_pool)
+        await app.state.redis.ping()
+        logger.info("redis_connected", nodes=settings.REDIS_CLUSTER_NODES)
+    except Exception as e:
+        logger.warning("redis_unavailable", error=str(e), message="Redis 未配置或不可用，相关功能降级")
+        app.state.redis = None
+
+    # 初始化 Elasticsearch 客户端（可选依赖）
+    try:
+        from elasticsearch import AsyncElasticsearch
+        es_client = AsyncElasticsearch(settings.ES_HOSTS.split(","))
+        app.state.es = es_client
+        if await es_client.ping():
+            logger.info("elasticsearch_connected", hosts=settings.ES_HOSTS)
+        else:
+            logger.warning("elasticsearch_ping_failed")
+            app.state.es = None
+    except Exception as e:
+        logger.warning("elasticsearch_unavailable", error=str(e), message="Elasticsearch 未配置或不可用，全文搜索降级为数据库搜索")
+        app.state.es = None
+
+    # 初始化 MinIO 客户端（可选依赖）
+    try:
+        from minio import Minio
+        minio_client = Minio(
+            settings.MINIO_ENDPOINT,
+            access_key=settings.MINIO_ACCESS_KEY,
+            secret_key=settings.MINIO_SECRET_KEY.get_secret_value(),
+            secure=settings.MINIO_SECURE,
+        )
+        if minio_client.bucket_exists(settings.MINIO_BUCKET):
+            app.state.minio = minio_client
+            logger.info("minio_connected", endpoint=settings.MINIO_ENDPOINT, bucket=settings.MINIO_BUCKET)
+        else:
+            minio_client.make_bucket(settings.MINIO_BUCKET)
+            app.state.minio = minio_client
+            logger.info("minio_bucket_created", bucket=settings.MINIO_BUCKET)
+    except Exception as e:
+        logger.warning("minio_unavailable", error=str(e), message="MinIO 未配置或不可用，文件存储功能降级")
+        app.state.minio = None
+
     yield
+
+    # 优雅关闭连接
     logger.info("hermes_stopping")
-    # TODO: 优雅关闭连接
+
+    if app.state.redis:
+        try:
+            await app.state.redis.aclose()
+            logger.info("redis_disconnected")
+        except Exception as e:
+            logger.warning("redis_close_error", error=str(e))
+
+    if hasattr(app.state, "es") and app.state.es:
+        try:
+            await app.state.es.close()
+            logger.info("elasticsearch_disconnected")
+        except Exception as e:
+            logger.warning("es_close_error", error=str(e))
+
+    logger.info("hermes_stopped")
 
 
 def create_app() -> FastAPI:

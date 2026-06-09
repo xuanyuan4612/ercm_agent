@@ -74,8 +74,9 @@ class AuditMiddleware(BaseHTTPMiddleware):
             "user_agent": request.headers.get("user-agent", ""),
         }
 
-        # 异步写入审计日志（不阻塞响应）
-        # TODO: 入队到 Celery audit 任务异步写入数据库
+        # 审计日志写入（当前为 structlog 异步输出，数据库持久化待接入）
+        # 生产环境：入队到 Celery audit 任务异步写入 PostgreSQL audit_logs 表
+        # app.send_task("hermes.tasks.audit.write", args=[audit_event], queue="hermes.audit")
         logger.info("audit_event", **audit_event)
 
         # 在响应头中返回 trace_id，方便前端问题排查

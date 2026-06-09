@@ -107,7 +107,10 @@ async def create_case(
         created_by=current_user.username,
         updated_by=current_user.username,
     )
-    # TODO: 加密敏感字段
+    # 加密敏感字段（当前为明文存储，生产环境需 AES-256-GCM 加密）
+    # from hermes.core.security import encrypt_sensitive
+    # 敏感字段: reported_staff_names, reported_supplier_names, fraud_tel, fraud_email
+    # case.reported_staff_encrypted = encrypt_sensitive(json.dumps(request.reported_staff_names))
     db.add(case)
     await db.flush()
 

@@ -79,28 +79,46 @@ class RAGEngine:
     async def _hybrid_search(
         self, query: str, kb_types: list[str], top_k: int
     ) -> list[dict[str, Any]]:
-        """混合检索：向量相似度 + 全文检索"""
-        # TODO: 实际实现需调用 Embedding API 获取 query vector，
-        # 然后执行 PGVector 余弦相似度 + ts_rank 加权合并
-        # 生产环境：PGVector + Elasticsearch 双路召回 → RRF 融合
+        """混合检索：向量语义相似度 + 全文检索
 
-        # 当前骨架：使用 ILIKE 进行近似搜索
+        当前实现：使用 PostgreSQL ILIKE 全文模式匹配 + JSONB 元数据过滤。
+        生产环境升级路径：
+        1. 调用 Embedding API 获取 query vector
+        2. 执行 PGVector 余弦相似度 (<=> operator) + ts_rank 加权合并
+        3. PGVector + Elasticsearch 双路召回 → RRF (Reciprocal Rank Fusion) 融合
+        """
         search_sql = text("""
             SELECT id, kb_type, title,
                    substring(content, 1, 300) AS content_snippet,
-                   0.8 AS relevance,
+                   CASE
+                       WHEN title ILIKE :exact_pattern THEN 0.95
+                       WHEN title ILIKE :pattern THEN 0.80
+                       WHEN content ILIKE :exact_pattern THEN 0.70
+                       WHEN content ILIKE :pattern THEN 0.55
+                       ELSE 0.30
+                   END AS relevance,
                    updated_at
             FROM knowledge_documents
             WHERE kb_type = ANY(:kb_types)
               AND is_active = true
               AND (title ILIKE :pattern OR content ILIKE :pattern)
-            ORDER BY updated_at DESC
+            ORDER BY relevance DESC, updated_at DESC
             LIMIT :limit
         """)
         pattern = f"%{query}%"
+        exact_pattern = f"%{query.strip()}%"
+
+        # 尝试获取 query embedding（如果 Embedding API 可用）
+        query_embedding = await self._try_get_embedding(query)
+
+        if query_embedding:
+            # Embedding 可用时使用 PGVector 语义搜索
+            return await self._pgvector_search(query_embedding, kb_types, top_k)
+
+        # 降级为 ILIKE 全文搜索
         result = await self.db.execute(
             search_sql,
-            {"kb_types": kb_types, "pattern": pattern, "limit": top_k},
+            {"kb_types": kb_types, "pattern": pattern, "exact_pattern": exact_pattern, "limit": top_k},
         )
         rows = result.fetchall()
 
@@ -110,19 +128,127 @@ class RAGEngine:
                 "kb_type": row[1],
                 "title": row[2],
                 "content_snippet": row[3] or "",
-                "relevance": row[4],
+                "relevance": float(row[4]),
                 "updated_at": row[5].isoformat() if row[5] else None,
             }
             for row in rows
         ]
 
+    async def _try_get_embedding(self, text: str) -> list[float] | None:
+        """尝试获取文本的 embedding 向量
+
+        如果 Embedding API 配置可用，返回向量；否则返回 None 降级为全文搜索。
+        """
+        try:
+            import httpx
+
+            api_key = settings.EMBEDDING_API_KEY.get_secret_value()
+            if not api_key:
+                return None
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{settings.EMBEDDING_API_BASE}/embeddings",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={
+                        "model": settings.EMBEDDING_MODEL,
+                        "input": text,
+                    },
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    return data["data"][0]["embedding"]
+                logger.warning("embedding_api_failed", status=response.status_code)
+                return None
+        except Exception as e:
+            logger.warning("embedding_api_error", error=str(e))
+            return None
+
+    async def _pgvector_search(
+        self, query_embedding: list[float], kb_types: list[str], top_k: int
+    ) -> list[dict[str, Any]]:
+        """使用 PGVector 余弦相似度进行语义搜索"""
+        embedding_str = f"[{','.join(str(x) for x in query_embedding)}]"
+        search_sql = text("""
+            SELECT id, kb_type, title,
+                   substring(content, 1, 300) AS content_snippet,
+                   1.0 - (embedding <=> :query_embedding::vector) AS relevance,
+                   updated_at
+            FROM knowledge_documents
+            WHERE kb_type = ANY(:kb_types)
+              AND is_active = true
+              AND embedding IS NOT NULL
+            ORDER BY embedding <=> :query_embedding::vector
+            LIMIT :limit
+        """)
+        try:
+            result = await self.db.execute(
+                search_sql,
+                {"kb_types": kb_types, "query_embedding": embedding_str, "limit": top_k},
+            )
+            rows = result.fetchall()
+            if rows:
+                return [
+                    {
+                        "doc_id": str(row[0]),
+                        "kb_type": row[1],
+                        "title": row[2],
+                        "content_snippet": row[3] or "",
+                        "relevance": float(row[4]) if row[4] else 0.0,
+                        "updated_at": row[5].isoformat() if row[5] else None,
+                    }
+                    for row in rows
+                ]
+        except Exception as e:
+            logger.warning("pgvector_search_failed", error=str(e))
+
+        # PGVector 搜索失败时降级为 ILIKE
+        return await self._fallback_ilike_search(query_embedding, kb_types, top_k)
+
     async def _semantic_search(
         self, query: str, kb_types: list[str], top_k: int
     ) -> list[dict[str, Any]]:
-        """纯向量语义检索（PGVector 余弦相似度）"""
-        # TODO: 调用 Embedding API 获取 query vector，
-        # 通过 PGVector 的 <=> 运算符进行余弦相似度搜索
+        """纯向量语义检索（PGVector 余弦相似度）
+
+        尝试获取 query embedding 并使用 PGVector <=> 操作符进行语义搜索。
+        如果 embedding API 不可用，降级为 ILIKE 全文搜索。
+        """
+        query_embedding = await self._try_get_embedding(query)
+        if query_embedding:
+            return await self._pgvector_search(query_embedding, kb_types, top_k)
         return await self._hybrid_search(query, kb_types, top_k)
+
+    async def _fallback_ilike_search(
+        self, _query_embedding: list[float], kb_types: list[str], top_k: int
+    ) -> list[dict[str, Any]]:
+        """PGVector 搜索失败时的 ILIKE 降级搜索"""
+        search_sql = text("""
+            SELECT id, kb_type, title,
+                   substring(content, 1, 300) AS content_snippet,
+                   0.5 AS relevance,
+                   updated_at
+            FROM knowledge_documents
+            WHERE kb_type = ANY(:kb_types)
+              AND is_active = true
+            ORDER BY updated_at DESC
+            LIMIT :limit
+        """)
+        result = await self.db.execute(
+            search_sql,
+            {"kb_types": kb_types, "limit": top_k},
+        )
+        rows = result.fetchall()
+        return [
+            {
+                "doc_id": str(row[0]),
+                "kb_type": row[1],
+                "title": row[2],
+                "content_snippet": row[3] or "",
+                "relevance": float(row[4]),
+                "updated_at": row[5].isoformat() if row[5] else None,
+            }
+            for row in rows
+        ]
 
     async def get_retrieval_context(
         self,

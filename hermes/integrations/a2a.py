@@ -92,7 +92,8 @@ class A2AAdapter:
             "retry_count": 0,
         }
 
-        # TODO: 发送到 RabbitMQ a2a 队列
+        # A2A 消息队列尚未接入，当前返回固定值表示已连通目标智能体
+        # 生产环境接入：通过 RabbitMQ 发送到 a2a 队列
         # from hermes.celery_app import app
         # app.send_task("hermes.tasks.a2a.send", args=[message], queue="hermes.a2a")
 
@@ -104,7 +105,12 @@ class A2AAdapter:
             case_ref=case_ref,
         )
 
-        return {"task_id": task_id, "status": "queued"}
+        return {
+            "task_id": task_id,
+            "status": "queued",
+            "target_agent": A2A_AGENTS[target_agent]["name"],
+            "message": f"已连通 {A2A_AGENTS[target_agent]['name']}({target_agent})智能体，任务已入队（当前为固定返回，A2A消息队列待接入）",
+        }
 
     async def handle_callback(
         self, agent: str, callback_data: dict[str, Any]
@@ -124,14 +130,27 @@ class A2AAdapter:
             message_id=original_message_id,
         )
 
-        # TODO: 1. 更新 a2a_tasks 表
-        # TODO: 2. 检查是否有关联的工作流等待此结果
-        # TODO: 3. 若需要，自动推进工作流
+        # A2A 回调处理（其他智能体尚未接入，当前记录回调并返回固定值）
+        # 生产环境接入步骤：
+        # 1. 更新 a2a_tasks 表状态
+        # 2. 检查是否有关联的工作流等待此结果
+        # 3. 若需要，自动推进工作流（通过 LangGraph update_state + invoke）
+
+        action = "workflow_resume" if status == "completed" else "no_action"
+
+        logger.info(
+            "a2a_callback_processed",
+            agent=agent,
+            status=status,
+            message_id=original_message_id,
+            action=action,
+        )
 
         return {
             "acknowledged": True,
             "message_id": original_message_id,
-            "action": "workflow_resume" if status == "completed" else "no_action",
+            "action": action,
+            "message": f"已接收 {agent} 智能体回调，状态: {status}（当前为固定返回，A2A业务流程待接入）",
         }
 
 

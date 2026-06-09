@@ -63,13 +63,18 @@ class RiskControlAdapter:
         self, hermes_case_id: str, updates: dict[str, Any]
     ) -> dict[str, Any]:
         """向风控系统推送案件更新"""
-        # TODO: 通过 RabbitMQ 或 HTTP 回调推送至风控系统
+        # 风控系统尚未接入，当前手动上传模式（固定返回）
+        # 生产环境接入：通过 RabbitMQ 或 HTTP 回调推送至风控系统
         logger.info(
             "risk_control_push",
             hermes_case_id=hermes_case_id,
             updates=list(updates.keys()),
         )
-        return {"status": "queued"}
+        return {
+            "status": "queued",
+            "mode": "manual_upload",
+            "message": "风控系统尚未接入，当前为手动上传模式，案件更新已记录待同步（固定返回）",
+        }
 
     async def sync_status(
         self, hermes_case_id: str, stage: str, status: str
@@ -84,11 +89,14 @@ class RiskControlAdapter:
             "post_report": "报案协助中",
         }
 
-        # TODO: 通过 WebSocket 推送至风控系统
+        # 风控系统 WebSocket 尚未接入，当前返回固定值
+        # 生产环境接入：通过 WebSocket 推送至风控系统
         return {
             "hermes_case_id": hermes_case_id,
             "current_stage": stage,
             "button_status": button_status_map.get(stage, "处理中"),
+            "mode": "manual_upload",
+            "message": "风控系统按钮状态同步待接入（当前固定返回）",
         }
 
 

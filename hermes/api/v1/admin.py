@@ -4,16 +4,40 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hermes.api.dependencies import GroupRoleRequired
+from hermes.core.config import settings
+from hermes.core.logging import get_logger
 from hermes.core.response import paginated, success
+from hermes.core.security import hash_password
 from hermes.db.models.shared import AuditLog, User
 from hermes.db.session import get_db
 
+logger = get_logger(__name__)
+
 router = APIRouter(prefix="/admin")
+
+
+class CreateUserRequest(BaseModel):
+    """创建用户请求"""
+    username: str = Field(..., min_length=3, max_length=50, description="用户名")
+    password: str = Field(..., min_length=settings.PASSWORD_MIN_LENGTH, description="密码")
+    display_name: str = Field(..., min_length=1, max_length=100, description="显示名称")
+    department: str = Field(..., max_length=100, description="部门")
+    email: str | None = Field(None, description="邮箱")
+    role: str = Field(default="ecovacs", description="角色: group/ecovacs/tineco")
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        allowed = {"group", "ecovacs", "tineco"}
+        if v not in allowed:
+            raise ValueError(f"角色必须为 {allowed} 之一")
+        return v
 
 
 # ── 用户管理 ───────────────────────────────────────────────────
@@ -57,12 +81,40 @@ async def list_users(
 
 @router.post("/users")
 async def create_user(
+    request: CreateUserRequest,
     current_user: GroupRoleRequired,
     db: AsyncSession = Depends(get_db),
 ):
-    """创建用户"""
-    # TODO: 从请求体解析用户信息，哈希密码
-    return success(message="用户创建功能待实现")
+    """创建用户（hashed password 存储）"""
+    # 检查用户名是否已存在
+    result = await db.execute(select(User).where(User.username == request.username))
+    existing = result.scalar_one_or_none()
+    if existing:
+        from hermes.core.exceptions import ConflictError
+        raise ConflictError(detail=f"用户名 {request.username} 已存在")
+
+    hashed_pw = hash_password(request.password)
+    user = User(
+        username=request.username,
+        hashed_password=hashed_pw,
+        display_name=request.display_name,
+        department=request.department,
+        email=request.email,
+        role=request.role,
+        is_active=True,
+    )
+    db.add(user)
+    await db.flush()
+    logger.info("user_created", username=request.username, role=request.role,
+                operator=current_user.username)
+
+    return success({
+        "id": str(user.id),
+        "username": user.username,
+        "display_name": user.display_name,
+        "role": user.role,
+        "is_active": user.is_active,
+    })
 
 
 @router.put("/users/{user_id}")

@@ -14,8 +14,11 @@ from hermes.core.exceptions import (
     CaseNotFoundError,
     NoPendingApprovalError,
 )
+from hermes.core.logging import get_logger
 from hermes.core.response import success
 from hermes.core.security import sign_approval
+
+logger = get_logger(__name__)
 from hermes.db.models.integrity import Case, CaseStage, HumanApproval
 from hermes.db.session import get_db
 from hermes.schemas.workflow import (
@@ -141,9 +144,22 @@ async def regenerate_content(
     """划词调整：碳基选中 AI 输出段落，提供修改指令，AI 重新生成指定部分。"""
     case = await _get_case(case_id, current_user, db)
 
-    # TODO: 调用 LLM 进行定向重新生成
-    # 将 selected_text + instruction 发送给 LLM，仅重新生成该段落
-    regenerated_text = f"[REGENERATED] 根据指令 '{request.instruction}' 对选中文本的重新生成结果"
+    # 划词调整：调用 LLM 定向重新生成选中段落
+    # 当前返回固定值：LLM 定向重新生成待接入
+    try:
+        from hermes.agents.llm_adapter import llm_adapter
+        response = await llm_adapter.invoke(
+            messages=[
+                {"role": "system", "content": "你是赫尔墨斯风控系统的AI助手。根据指令对指定文本进行修改。"},
+                {"role": "user", "content": f"原文:\n{request.selected_text}\n\n修改指令:\n{request.instruction}\n\n请输出修改后的文本（仅输出修改后的文本，不要额外说明）："},
+            ],
+            temperature=0.3,
+            max_tokens=1024,
+        )
+        regenerated_text = response.strip()
+    except Exception as e:
+        logger.warning("regenerate_llm_failed", error=str(e))
+        regenerated_text = f"[AI服务暂不可用] 根据指令 '{request.instruction}' 的重新生成结果（当前人工审核模式）"
 
     return success({"regenerated_text": regenerated_text})
 

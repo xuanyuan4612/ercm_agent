@@ -59,10 +59,12 @@
 所有模块共享以下公共基础设施：
 
 - **权限管理（RBAC）**：集团 / 科沃斯 / 添可 三级角色
+- **租户隔离**：P1 生产默认应用层 `client` 过滤 + PostgreSQL RLS 双重隔离
 - **知识库体系**：按业务阶段划分独立知识库（PGVector + Elasticsearch）
-- **A2A 智能体通信**：与龟宝（HR）、西塞罗（法务）、波特（财务）协作
-- **风控系统对接**：字段映射、状态同步、WebSocket 推送
-- **操作日志与审计**：全程留痕，不可篡改，等保二级合规
+- **A2A 智能体通信**：与龟宝（HR）、西塞罗（法务）、波特（财务）协作；事件携带 `schema_version`、`event_id`、`correlation_id`、`idempotency_key`，生产队列使用 RabbitMQ quorum queues
+- **风控系统对接**：字段映射、状态同步、Webhook 签名校验、WebSocket 推送
+- **操作日志与审计**：全程留痕，audit_log append-only，不可篡改，等保二级合规
+- **AI 安全治理**：Prompt 注入防护、RAG 越权防护、Tool 权限矩阵、法规/证据引用校验，高风险输出必须人工复核
 - **输出物规范**：支持方案变更、划词调整，导出 Word / Excel 格式
 
 ---

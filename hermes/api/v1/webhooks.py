@@ -26,18 +26,21 @@ async def risk_control_webhook(request: Request):
     logger.info("webhook_risk_control", event=event)
 
     if event == "case_created":
-        # TODO: 同步创建 Hermes 案件
+        # 风控系统尚未接入，返回固定值表示已连通
+        # 生产环境：同步创建 Hermes 案件到数据库
         return success({
             "acknowledged": True,
             "hermes_case_id": "c-new",
             "hermes_task_id": "DH20260606001",
+            "mode": "manual_upload",
+            "message": "风控系统 Webhook 已接收，案件同步为手动上传模式（固定返回）",
         })
     elif event == "status_sync":
-        # TODO: 更新同步状态
-        return success({"acknowledged": True})
+        # 状态同步（固定返回，风控系统尚未接入）
+        return success({"acknowledged": True, "message": "状态同步已记录（手动模式）"})
     elif event == "closure_confirmed":
-        # TODO: 记录闭环确认
-        return success({"acknowledged": True})
+        # 闭环确认（固定返回，风控系统尚未接入）
+        return success({"acknowledged": True, "message": "闭环确认已记录（手动模式）"})
     return success({"acknowledged": True, "event": event})
 
 

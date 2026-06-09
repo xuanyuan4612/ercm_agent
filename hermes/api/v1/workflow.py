@@ -19,6 +19,7 @@ from hermes.core.exceptions import (
     WorkflowNotStartedError,
 )
 from hermes.core.response import success
+from hermes.core.logging import get_logger
 from hermes.db.models.integrity import Case, CaseStage
 from hermes.db.session import get_db
 from hermes.schemas.workflow import (
@@ -26,6 +27,8 @@ from hermes.schemas.workflow import (
     WorkflowResumeRequest,
     WorkflowStatusResponse,
 )
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/cases/{case_id}/workflow")
 
@@ -70,13 +73,28 @@ async def start_workflow(
     db.add(stage)
     await db.flush()
 
-    # TODO: 实际启动 LangGraph 工作流（异步执行，通过 Celery / RabbitMQ 调度）
-    # 当前为骨架实现：直接进入守门等待状态
+    # LangGraph 工作流启动（当前为骨架实现，Celery/RabbitMQ 调度待接入）
+    # 生产环境：通过 Celery task 异步执行 LangGraph graph.ainvoke()
+    # 当前直接进入守门等待状态
+    try:
+        from hermes.workflows.integrity.graph import integrity_graph
+        # 异步启动工作流（后台执行，不阻塞响应）
+        import asyncio
+        asyncio.create_task(
+            integrity_graph.start_workflow(str(case.id), case.task_id, case.client, case.fraud_source)
+        )
+        logger.info("workflow_started_async", task_id=case.task_id, thread_id=thread_id)
+    except Exception as e:
+        logger.warning("workflow_graph_unavailable", error=str(e),
+                        message="LangGraph 工作流图不可用，使用骨架推进模式")
+        # 降级为骨架推进：直接从 pending_approval 开始
 
     return success({
         "thread_id": thread_id,
         "current_stage": "intake",
         "status": "pending_approval",
+        "mode": "skeleton",
+        "message": "工作流已启动，等待第一阶段 AI 分析（LangGraph 工作流待完整接入）",
     })
 
 
@@ -96,8 +114,8 @@ async def resume_workflow(
     if case.status == "closed":
         raise WorkflowAlreadyCompletedError()
 
-    # TODO: 通过 LangGraph 的 update_state + invoke 恢复执行
-    # 当前骨架：简单推进到下一阶段
+    # LangGraph 工作流恢复（当前骨架推进到下一阶段，LangGraph update_state 待接入）
+    # 生产环境：通过 LangGraph 的 update_state + invoke 恢复执行
 
     stage_order = {
         "intake": 1, "investigation": 2, "analysis": 3,
@@ -202,5 +220,12 @@ async def interrupt_workflow(
     if not case.langgraph_thread_id:
         raise WorkflowNotStartedError()
 
-    # TODO: 调用 LangGraph interrupt 机制
+    # LangGraph interrupt 机制调用（当前骨架实现）
+    # 生产环境：调用 LangGraph graph.interrupt() 方法
+    try:
+        from hermes.workflows.integrity.graph import integrity_graph
+        integrity_graph.interrupt_workflow(case.task_id, case.current_stage)
+    except Exception as e:
+        logger.warning("workflow_interrupt_graph_unavailable", error=str(e))
+
     return success(message=f"工作流 {case.task_id} 阶段 {case.current_stage} 已中断")

@@ -225,6 +225,8 @@ COMMENT ON COLUMN audit_log.operation IS '操作类型：CREATE/UPDATE/DELETE/EX
 COMMENT ON COLUMN audit_log.changes IS '变更内容摘要（JSON格式，敏感字段脱敏后记录）';
 ```
 
+生产约束：`audit_log` 采用 append-only 语义，应用层禁止 UPDATE/DELETE；数据库层应通过权限收缩、触发器或 RLS/Policy 阻断非审计管理员的修改。审计归档只能追加到冷存储，不能清空热表后丢失可追溯链路。
+
 ### 3.3 外部系统同步记录（external_sync_logs）
 
 ```sql
@@ -275,6 +277,48 @@ COMMENT ON TABLE a2a_tasks IS 'A2A 智能体间通信任务表';
 COMMENT ON COLUMN a2a_tasks.target_agent IS '目标智能体：guibao(龟宝)/cicero(西塞罗)/porter(波特)';
 COMMENT ON COLUMN a2a_tasks.command IS '操作指令：initiate_penalty_tracking/push_legal_review/push_supplier_deduction 等';
 ```
+
+### 3.5 消息 Outbox / Inbox 表（生产事件一致性）
+
+```sql
+-- 事务发件箱：业务写入与消息发布同事务落库，后台发布到 RabbitMQ
+CREATE TABLE event_outbox (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    schema_version VARCHAR(50) NOT NULL,
+    event_id UUID UNIQUE NOT NULL,
+    correlation_id VARCHAR(100),
+    aggregate_type VARCHAR(50) NOT NULL,
+    aggregate_id UUID,
+    event_type VARCHAR(80) NOT NULL,
+    routing_key VARCHAR(120) NOT NULL,
+    payload JSONB NOT NULL,
+    status VARCHAR(20) DEFAULT 'pending'
+        CHECK (status IN ('pending', 'published', 'failed', 'dead_lettered')),
+    retry_count SMALLINT DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    published_at TIMESTAMPTZ
+);
+
+-- 事务收件箱：消费幂等与长期去重审计
+CREATE TABLE event_inbox (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id UUID UNIQUE NOT NULL,
+    idempotency_key VARCHAR(200) UNIQUE NOT NULL,
+    source_system VARCHAR(50) NOT NULL,
+    schema_version VARCHAR(50) NOT NULL,
+    payload_hash VARCHAR(128) NOT NULL,
+    status VARCHAR(20) DEFAULT 'received'
+        CHECK (status IN ('received', 'processing', 'processed', 'failed', 'ignored')),
+    received_at TIMESTAMPTZ DEFAULT NOW(),
+    processed_at TIMESTAMPTZ,
+    error_message TEXT
+);
+
+COMMENT ON TABLE event_outbox IS '事务发件箱，保证业务状态变更与消息发布最终一致';
+COMMENT ON TABLE event_inbox IS '事务收件箱，保证 Webhook/A2A/队列消费幂等';
+```
+
+事件要求：所有跨模块事件、A2A 任务、Webhook 回调必须带 `schema_version`、`event_id`、`correlation_id` 和 `idempotency_key`。Redis TTL 去重只能作为热路径优化，长期去重以 `event_inbox` 为准。
 
 ---
 
@@ -1465,13 +1509,13 @@ CREATE INDEX idx_kb_embedding_common
 | 要求项 | 实现方案 |
 |--------|---------|
 | **身份鉴别** | JWT 令牌（8h过期），登录失败 5 次锁定 30 分钟，刷新令牌 7 天 |
-| **访问控制** | RBAC 三层角色（group/ecovacs/tineco）+ 应用层行级数据过滤 |
-| **安全审计** | 全量操作记录至 audit_log，保留 >= 6 个月，仅追加不可删除 |
+| **访问控制** | RBAC 三层角色（group/ecovacs/tineco）+ 应用层行级过滤 + P1 生产默认启用 PostgreSQL RLS |
+| **安全审计** | 全量操作记录至 audit_log，保留 >= 6 个月，append-only，仅追加不可删除 |
 | **通信保密性** | HTTPS + 内网 mTLS（服务间通信） |
 | **数据保密性** | 个人信息列级 AES-256-GCM 加密，日志中敏感字段脱敏 |
 | **软件容错** | 关键节点失败自动重试 3 次，降级策略：告警 + 人工接管 |
 | **资源控制** | API 速率限制 100 req/min/用户，文件上传限 50MB |
-| **数据备份** | PG 每日全量备份 + WAL 连续归档，保留 30 天 |
+| **数据备份** | P1 使用 pgBackRest 全量/增量备份 + WAL 连续归档，保留 30 天；D0 测试环境可用每日 `pg_dump` |
 | **剩余信息保护** | 用户登出清除 Session，敏感字段不写入应用日志 |
 | **数字签名** | human_approvals 表 signature 字段采用 HmacSHA256 防篡改签名 |
 
@@ -1485,6 +1529,14 @@ CREATE INDEX idx_kb_embedding_common
 | improvement_issues | `is_voided` | 问题作废需填写 void_reason |
 | risk_rules | `status = 'deprecated'` | 规则作废保留历史 |
 | knowledge_documents | `is_active` | 文档逻辑删除后可恢复 |
+
+### 13.5 租户隔离与数据销毁审批
+
+- P1 生产中所有租户相关表必须包含 `client` 字段，并启用 PostgreSQL RLS；应用层查询仍需自动注入 `client` 条件，形成双重隔离。
+- `group` 角色跨租户访问必须具备显式全局权限，并在 `audit_log` 中记录访问原因。
+- 超过保留期的数据不得自动物理删除；需提交数据销毁审批，记录审批人、销毁范围、销毁方式、时间和校验结果。
+- 物理销毁仅适用于超过法定/内控保留期且审批通过的数据；案件、审计日志、人机审批记录默认不可物理删除。
+- 脱敏数据导出需记录 `EXPORT` 审计事件；导出文件应带有效期和下载次数限制。
 
 ---
 

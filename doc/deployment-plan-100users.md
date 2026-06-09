@@ -1,7 +1,8 @@
-# 赫尔墨斯（Hermes）测试环境部署手册 — 100 用户 / 5TB
+# 赫尔墨斯（Hermes）测试 / 本地部署手册 — 100 用户 / 5TB
 
-> 版本：v3.0 | 目标：Linux 7.6 单机 Docker Compose 测试环境 | 容量：100 用户 / 5TB
-> 适用范围：在现有 CentOS 7.6 / RHEL 7 服务器上部署完整 Hermes 测试环境
+> 版本：v3.1 | Profile：D0 Docker Compose 本地/测试/PoC | 目标：Linux 7.6 单机 Docker Compose | 容量：100 用户测试规模 / 5TB 测试或脱敏数据
+
+> 适用范围：本地开发、测试环境、PoC、演示和容量验证。本文不作为正式生产部署方案，不承诺生产 SLA、RPO/RTO 或等保上线能力；生产部署以 `doc/architecture-design.md` 的 P1 K8s 高可用架构为准。
 
 ---
 
@@ -29,13 +30,13 @@
 │  │   (+node-exporter)    (监控仪表板, 可选)              │   │
 │  └───────────────────────────────────────────────────────┘   │
 │                                                              │
-│  对外端口:                                                   │
-│  :8080 → Nginx (API 入口)                                   │
-│  :3000 → Grafana                                            │
-│  :9001 → MinIO Console                                      │
-│  :15672→ RabbitMQ 管理界面                                  │
+│  对外端口（测试环境建议）:                                    │
+│  :8080/443 → Nginx (API 入口)                               │
+│  :3000/:9001/:15672 → 仅堡垒机/VPN/localhost 可访问          │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+如测试数据需要长期保留，可选配备份磁盘或备份主机：用于 PostgreSQL 备份恢复演练、MinIO `rsync` 和配置文件加密备份。该备份能力仅用于测试数据保护，不代表生产高可用。
 
 ### 1.2 容器资源分配（10 个核心服务 + 可选监控）
 
@@ -64,7 +65,23 @@
 | MinIO 文件存储 | Docker Volume 或 绑定挂载 | 2-4TB | HDD（大容量） |
 | Docker 镜像 & 日志 | 系统盘 | 20-50GB | 系统盘 |
 
-> 测试环境使用 Docker Volume 即可（默认 `/var/lib/docker/volumes/`）。当文件量增长到 TB 级别时，建议将 MinIO 数据绑定挂载到独立的大容量 HDD。
+测试/开发可使用 Docker Volume（默认 `/var/lib/docker/volumes/`）。如测试数据接近 TB 级或需要反复压测，建议将 PostgreSQL、Elasticsearch 和 MinIO 绑定挂载到独立磁盘；MinIO 可使用 ≥8TB RAID1/HDD，PostgreSQL 使用 SSD。
+
+### 1.4 开发 / 部署模式选择
+
+| 模式 | 适用场景 | 代码运行位置 | 基础组件运行位置 | 推荐阶段 |
+|------|----------|--------------|------------------|----------|
+| **本机开发模式** | 开发者本地调试 API、前端和 Agent 逻辑 | 开发机（Windows/Mac/Linux） | 虚拟机 Docker Compose | 日常开发、联调 |
+| **虚拟机完整单机模式** | 第一次部署、多人测试、演示 | 虚拟机 Docker Compose | 虚拟机 Docker Compose | 首次联调、测试环境 |
+| **自动化部署模式** | 代码已稳定，需要 push 后自动更新测试环境 | CI 构建镜像，虚拟机拉取运行 | 虚拟机 Docker Compose | 后续迭代 |
+
+推荐顺序：
+
+1. 先按 §2.4 让开发机代码能连接虚拟机上的 PostgreSQL、Redis、RabbitMQ、Elasticsearch 和 MinIO。
+2. 再按 §3.5 把代码第一次上传到虚拟机，完成完整单机部署和数据库迁移。
+3. 手动部署稳定后，再按 §3.6 接入 GitHub Actions 或 GitLab CI/CD。
+
+> 容器内部访问使用服务名，例如 `postgres`、`redis`、`rabbitmq`、`elasticsearch`、`minio:9000`。开发机访问虚拟机组件时不能使用这些服务名，必须使用虚拟机 IP 或 SSH 隧道端口。
 
 ---
 
@@ -254,6 +271,150 @@ newgrp docker
 docker --version && docker-compose --version
 ```
 
+### 2.4 开发机连接虚拟机组件
+
+本节用于“开发机运行代码，虚拟机只跑基础组件”的场景。开发机可以运行：
+
+```bash
+# 后端
+cp .env.example .env.local-vm
+# 按下面直连或 SSH 隧道示例修改 .env.local-vm 后：
+
+# PowerShell
+$env:ENV="local-vm"; uv run uvicorn hermes.main:app --host 0.0.0.0 --port 8000
+
+# Bash / Git Bash
+ENV=local-vm uv run uvicorn hermes.main:app --host 0.0.0.0 --port 8000
+
+# 如果不想设置 ENV，也可以把 .env.local-vm 复制为 .env
+
+# 前端（如需要）
+cd frontend
+npm install
+npm run dev
+```
+
+#### 方案 A：直连虚拟机 IP
+
+适用于本地虚拟机、内网测试机或安全组只对开发机开放的环境。假设虚拟机 IP 为 `VM_IP=192.168.56.20`：
+
+```bash
+# .env.local-vm
+ENV=local-vm
+DEBUG=true
+CORS_ORIGINS=["*"]
+
+# PostgreSQL
+DB_HOST_WRITE=192.168.56.20
+DB_HOST_READ=192.168.56.20
+DB_PORT=5432
+DB_NAME=hermes
+DB_USER=hermes
+DB_PASSWORD=hermes_test_pwd
+
+# Redis
+REDIS_CLUSTER_NODES=redis://192.168.56.20:6379/0
+REDIS_PASSWORD=
+
+# RabbitMQ
+RABBITMQ_HOST=192.168.56.20
+RABBITMQ_PORT=5672
+RABBITMQ_USER=hermes
+RABBITMQ_PASSWORD=hermes_test_pwd
+
+# Elasticsearch
+ES_HOSTS=http://192.168.56.20:9200
+
+# MinIO
+MINIO_ENDPOINT=192.168.56.20:9000
+MINIO_ACCESS_KEY=hermes
+MINIO_SECRET_KEY=hermes_test_pwd
+MINIO_BUCKET=hermes
+MINIO_SECURE=false
+```
+
+直连模式需要虚拟机防火墙、安全组或 NAT 端口映射允许开发机访问以下端口。若使用 §3.1 的一键脚本，需先把虚拟机 `.env` 中的 `BIND_ADDR=127.0.0.1` 改为 `BIND_ADDR=0.0.0.0` 或指定 VM 内网地址，再执行 `docker-compose up -d`。不要把这些端口暴露到公网。
+
+| 组件 | 开发机访问地址 | 容器内部地址 | 验证方式 |
+|------|----------------|--------------|----------|
+| API/Nginx | `http://VM_IP:8080/api/v1/health` | `nginx:80` / `api:8000` | `curl http://VM_IP:8080/api/v1/health` |
+| PostgreSQL | `VM_IP:5432` | `postgres:5432` | `psql "postgresql://hermes:hermes_test_pwd@VM_IP:5432/hermes"` |
+| Redis | `redis://VM_IP:6379/0` | `redis:6379` | `redis-cli -h VM_IP -p 6379 ping` |
+| RabbitMQ AMQP | `VM_IP:5672` | `rabbitmq:5672` | `nc -vz VM_IP 5672` |
+| RabbitMQ UI | `http://VM_IP:15672` | `rabbitmq:15672` | 浏览器登录 `hermes / hermes_test_pwd` |
+| Elasticsearch | `http://VM_IP:9200` | `elasticsearch:9200` | `curl http://VM_IP:9200/_cluster/health` |
+| MinIO API | `VM_IP:9000` | `minio:9000` | `curl http://VM_IP:9000/minio/health/live` |
+| MinIO Console | `http://VM_IP:9001` | `minio:9001` | 浏览器登录 `hermes / hermes_test_pwd` |
+
+#### 方案 B：SSH 隧道
+
+适用于不想开放数据库和中间件端口的环境。虚拟机只需要开放 SSH；开发机通过本机端口访问虚拟机组件。
+
+```bash
+VM_USER=hermes
+VM_IP=192.168.56.20
+
+ssh -N \
+  -L 15432:localhost:5432 \
+  -L 16379:localhost:6379 \
+  -L 15673:localhost:5672 \
+  -L 115672:localhost:15672 \
+  -L 19200:localhost:9200 \
+  -L 19000:localhost:9000 \
+  -L 19001:localhost:9001 \
+  ${VM_USER}@${VM_IP}
+```
+
+SSH 隧道模式下开发机 `.env.local-vm` 使用本机端口：
+
+```bash
+# .env.local-vm
+ENV=local-vm
+DEBUG=true
+CORS_ORIGINS=["*"]
+
+# PostgreSQL
+DB_HOST_WRITE=127.0.0.1
+DB_HOST_READ=127.0.0.1
+DB_PORT=15432
+DB_NAME=hermes
+DB_USER=hermes
+DB_PASSWORD=hermes_test_pwd
+
+# Redis
+REDIS_CLUSTER_NODES=redis://127.0.0.1:16379/0
+REDIS_PASSWORD=
+
+# RabbitMQ
+RABBITMQ_HOST=127.0.0.1
+RABBITMQ_PORT=15673
+RABBITMQ_USER=hermes
+RABBITMQ_PASSWORD=hermes_test_pwd
+
+# Elasticsearch
+ES_HOSTS=http://127.0.0.1:19200
+
+# MinIO
+MINIO_ENDPOINT=127.0.0.1:19000
+MINIO_ACCESS_KEY=hermes
+MINIO_SECRET_KEY=hermes_test_pwd
+MINIO_BUCKET=hermes
+MINIO_SECURE=false
+```
+
+隧道验证命令：
+
+```bash
+psql "postgresql://hermes:hermes_test_pwd@127.0.0.1:15432/hermes"
+redis-cli -h 127.0.0.1 -p 16379 ping
+curl http://127.0.0.1:19200/_cluster/health
+curl http://127.0.0.1:19000/minio/health/live
+
+# 浏览器:
+# RabbitMQ UI: http://127.0.0.1:115672
+# MinIO Console: http://127.0.0.1:19001
+```
+
 ---
 
 ## 三、一键部署
@@ -287,8 +448,12 @@ cat > .env << 'ENVEOF'
 JWT_SECRET=hermes-test-jwt-secret-change-in-production
 ENCRYPTION_KEY=hermes-test-encryption-key-change-in-prod
 DB_PASSWORD=hermes_test_pwd
+DB_USER=hermes
 RABBITMQ_PASSWORD=hermes_test_pwd
-MINIO_ROOT_PASSWORD=hermes_test_pwd
+RABBITMQ_USER=hermes
+MINIO_ACCESS_KEY=hermes
+MINIO_SECRET_KEY=hermes_test_pwd
+MINIO_BUCKET=hermes
 GRAFANA_PASSWORD=admin123
 
 # ==================== LLM 配置（必须填入真实 Key）====================
@@ -305,17 +470,21 @@ EMBEDDING_API_BASE=https://api.lingyaai.cn/v1
 EMBEDDING_MODEL=text-embedding-3-large
 
 # ==================== 服务地址（Docker 内部网络，无需修改）====================
-DB_HOST=postgres
+DB_HOST_WRITE=postgres
+DB_HOST_READ=postgres
 DB_PORT=5432
-REDIS_HOST=redis
-REDIS_PORT=6379
-ES_HOST=elasticsearch
-ES_PORT=9200
+DB_NAME=hermes
+REDIS_CLUSTER_NODES=redis://redis:6379/0
+ES_HOSTS=http://elasticsearch:9200
 RABBITMQ_HOST=rabbitmq
 RABBITMQ_PORT=5672
+RABBITMQ_VHOST=/
 MINIO_ENDPOINT=minio:9000
+MINIO_SECURE=false
 
-# ==================== 部署标识 ====================
+# ==================== 端口绑定与部署标识 ====================
+# 默认仅绑定到虚拟机本机，供 SSH 隧道访问；如需开发机通过 VM_IP 直连，改为 0.0.0.0 并限制来源 IP
+BIND_ADDR=127.0.0.1
 HERMES_VERSION=latest
 COMPOSE_PROJECT_NAME=hermes-test
 ENVEOF
@@ -346,12 +515,23 @@ services:
   api:
     image: hermes-api:latest
     environment:
-      - DB_HOST=${DB_HOST}
+      - DB_HOST_WRITE=${DB_HOST_WRITE}
+      - DB_HOST_READ=${DB_HOST_READ}
       - DB_PORT=${DB_PORT}
-      - REDIS_HOST=${REDIS_HOST}
-      - ES_HOST=${ES_HOST}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - REDIS_CLUSTER_NODES=${REDIS_CLUSTER_NODES}
+      - ES_HOSTS=${ES_HOSTS}
       - RABBITMQ_HOST=${RABBITMQ_HOST}
+      - RABBITMQ_PORT=${RABBITMQ_PORT}
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
       - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_BUCKET=${MINIO_BUCKET}
+      - MINIO_SECURE=${MINIO_SECURE}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_API_BASE=${LLM_API_BASE}
       - LLM_MODEL=${LLM_MODEL}
@@ -387,11 +567,23 @@ services:
     image: hermes-worker:latest
     command: celery -A hermes.worker worker -Q doc,llm,report,sync,a2a,kb -c 2 --loglevel=info
     environment:
-      - DB_HOST=${DB_HOST}
-      - REDIS_HOST=${REDIS_HOST}
-      - ES_HOST=${ES_HOST}
+      - DB_HOST_WRITE=${DB_HOST_WRITE}
+      - DB_HOST_READ=${DB_HOST_READ}
+      - DB_PORT=${DB_PORT}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - REDIS_CLUSTER_NODES=${REDIS_CLUSTER_NODES}
+      - ES_HOSTS=${ES_HOSTS}
       - RABBITMQ_HOST=${RABBITMQ_HOST}
+      - RABBITMQ_PORT=${RABBITMQ_PORT}
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
       - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_BUCKET=${MINIO_BUCKET}
+      - MINIO_SECURE=${MINIO_SECURE}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_API_BASE=${LLM_API_BASE}
       - LLM_MODEL=${LLM_MODEL}
@@ -419,8 +611,10 @@ services:
     image: pgvector/pgvector:pg16
     environment:
       - POSTGRES_DB=hermes
-      - POSTGRES_USER=hermes
+      - POSTGRES_USER=${DB_USER}
       - POSTGRES_PASSWORD=${DB_PASSWORD}
+    ports:
+      - "${BIND_ADDR}:5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./init-scripts:/docker-entrypoint-initdb.d:ro
@@ -437,6 +631,8 @@ services:
   # ============ Redis ============
   redis:
     image: redis:7-alpine
+    ports:
+      - "${BIND_ADDR}:6379:6379"
     command: >
       redis-server
       --appendonly yes
@@ -458,6 +654,8 @@ services:
   # ============ Elasticsearch（单节点）============
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    ports:
+      - "${BIND_ADDR}:9200:9200"
     environment:
       - discovery.type=single-node
       - ES_JAVA_OPTS=-Xms2g -Xmx2g
@@ -478,9 +676,10 @@ services:
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     ports:
-      - "15672:15672"
+      - "${BIND_ADDR}:5672:5672"
+      - "${BIND_ADDR}:15672:15672"
     environment:
-      - RABBITMQ_DEFAULT_USER=hermes
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
@@ -500,10 +699,11 @@ services:
     image: minio/minio:RELEASE.2025-04-08T15-41-24Z
     command: server /data --console-address ":9001"
     ports:
-      - "9001:9001"
+      - "${BIND_ADDR}:9000:9000"
+      - "${BIND_ADDR}:9001:9001"
     environment:
-      - MINIO_ROOT_USER=hermes
-      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY}
     volumes:
       - minio_data:/data
     restart: unless-stopped
@@ -534,7 +734,7 @@ services:
   grafana:
     image: grafana/grafana:11.4.0
     ports:
-      - "3000:3000"
+      - "${BIND_ADDR}:3000:3000"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
       - GF_AUTH_ANONYMOUS_ENABLED=true
@@ -695,6 +895,7 @@ docker-compose ps --format "table {{.Name}}\t{{.Status}}"
 
 SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 [ -z "$SERVER_IP" ] && SERVER_IP="localhost"
+BIND_ADDR=$(grep '^BIND_ADDR=' .env | cut -d= -f2-)
 
 echo ""
 echo "========================================"
@@ -702,9 +903,16 @@ echo "  关键访问地址"
 echo "========================================"
 echo "  API:           http://${SERVER_IP}:8080/api/v1/"
 echo "  API 健康检查:  http://${SERVER_IP}:8080/api/v1/health"
-echo "  MinIO Console: http://${SERVER_IP}:9001 (hermes / hermes_test_pwd)"
-echo "  Grafana:       http://${SERVER_IP}:3000 (admin / admin123)"
-echo "  RabbitMQ:      http://${SERVER_IP}:15672 (hermes / hermes_test_pwd)"
+if [ "${BIND_ADDR}" = "127.0.0.1" ]; then
+  echo "  管理端口默认仅 VM 本机可访问；开发机访问请参考 §2.4 SSH 隧道"
+  echo "  MinIO Console: http://127.0.0.1:9001 (hermes / hermes_test_pwd)"
+  echo "  Grafana:       http://127.0.0.1:3000 (admin / admin123)"
+  echo "  RabbitMQ:      http://127.0.0.1:15672 (hermes / hermes_test_pwd)"
+else
+  echo "  MinIO Console: http://${SERVER_IP}:9001 (hermes / hermes_test_pwd)"
+  echo "  Grafana:       http://${SERVER_IP}:3000 (admin / admin123)"
+  echo "  RabbitMQ:      http://${SERVER_IP}:15672 (hermes / hermes_test_pwd)"
+fi
 echo ""
 echo "========================================"
 echo "  部署后操作"
@@ -726,8 +934,10 @@ echo "========================================"
 # 1. 将脚本复制到服务器
 # 2. 编辑 .env 中的 LLM_API_KEY、EMBEDDING_API_KEY 为真实值
 #    （可以先不修改，等基础设施跑通后再改）
+# 3. 默认 BIND_ADDR=127.0.0.1，仅支持 VM 本机和 SSH 隧道访问中间件
+#    如确需开发机直连 VM_IP:5432/6379/5672/9200/9000，改为 BIND_ADDR=0.0.0.0，并用防火墙限制来源 IP
 
-# 3. 运行部署
+# 4. 运行部署
 chmod +x hermes-deploy.sh
 bash hermes-deploy.sh
 ```
@@ -769,7 +979,179 @@ curl http://localhost:8080/api/v1/health
 | MinIO | `curl localhost:9000/minio/health/live` | 200 OK |
 | 管理员登录 | POST `/api/v1/auth/login` | 返回 access_token |
 
-### 3.5 自动化部署（GitLab CI/CD，推荐）
+### 3.5 第一次上传代码到虚拟机
+
+首次部署建议先走手动路径，确认代码、数据库迁移和基础组件都能跑通后，再接入 §3.6 自动化部署。`.env` 只在虚拟机本地维护，不随代码压缩包上传，不提交 Git。
+
+#### 3.5.1 路径 A：虚拟机能访问 Git 仓库
+
+适用于虚拟机能访问 GitHub、GitLab、极狐或公司内网 Git 的环境：
+
+```bash
+# 在虚拟机上执行
+sudo mkdir -p /opt/hermes
+sudo chown -R $USER:$USER /opt/hermes
+
+git clone <你的仓库地址> /opt/hermes
+cd /opt/hermes
+
+cp .env.example .env
+vi .env
+# 至少修改：JWT_SECRET、ENCRYPTION_KEY、LLM_API_KEY、EMBEDDING_API_KEY
+# 如果使用仓库自带 docker-compose.yml，至少把组件连接改成下面这组容器内部地址
+```
+
+仓库自带 `docker-compose.yml` 的最小连接配置如下；它使用该 Compose 文件里的默认测试账号：
+
+```bash
+# PostgreSQL
+DB_HOST_WRITE=postgres
+DB_HOST_READ=postgres
+DB_PORT=5432
+DB_NAME=hermes
+DB_USER=hermes
+DB_PASSWORD=hermes
+
+# Redis
+REDIS_CLUSTER_NODES=redis://redis:6379/0
+
+# RabbitMQ
+RABBITMQ_HOST=rabbitmq
+RABBITMQ_PORT=5672
+RABBITMQ_USER=guest
+RABBITMQ_PASSWORD=guest
+
+# Elasticsearch
+ES_HOSTS=http://elasticsearch:9200
+
+# MinIO
+MINIO_ENDPOINT=minio:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_BUCKET=hermes
+MINIO_SECURE=false
+```
+
+```bash
+
+docker compose build api
+docker compose up -d
+docker compose exec api alembic upgrade head
+
+curl http://localhost:8000/health
+```
+
+如系统只安装了旧版 Compose，把上面的 `docker compose` 改成 `docker-compose`。
+
+后续更新代码：
+
+```bash
+cd /opt/hermes
+git pull
+docker compose build api
+docker compose up -d --remove-orphans
+docker compose exec api alembic upgrade head
+```
+
+#### 3.5.2 路径 B：虚拟机不能访问 Git，开发机打包上传
+
+在开发机仓库根目录执行。推荐用 `git archive`，它只打包 Git 已跟踪文件，不会把 `.env`、`.venv`、`node_modules`、缓存和 `.git` 一起传上去：
+
+```bash
+# 开发机执行
+git archive --format=tar.gz -o hermes-src.tar.gz HEAD
+scp hermes-src.tar.gz hermes@VM_IP:/tmp/
+
+# 虚拟机执行
+sudo mkdir -p /opt/hermes
+sudo chown -R $USER:$USER /opt/hermes
+tar xzf /tmp/hermes-src.tar.gz -C /opt/hermes
+cd /opt/hermes
+
+cp .env.example .env
+vi .env
+# 按 §3.5.1 的“仓库自带 docker-compose.yml 的最小连接配置”修改组件地址和测试账号
+
+docker compose build api
+docker compose up -d
+docker compose exec api alembic upgrade head
+
+curl http://localhost:8000/health
+```
+
+如果当前代码还没有全部纳入 Git，可临时使用压缩包，但必须排除本地环境和密钥：
+
+```bash
+# 开发机执行（Linux/macOS/Git Bash）
+tar --exclude='.git' \
+    --exclude='.env' \
+    --exclude='.env.*' \
+    --exclude='.venv' \
+    --exclude='node_modules' \
+    --exclude='frontend/node_modules' \
+    --exclude='__pycache__' \
+    --exclude='.pytest_cache' \
+    --exclude='logs' \
+    -czf hermes-src.tar.gz .
+
+scp hermes-src.tar.gz hermes@VM_IP:/tmp/
+```
+
+#### 3.5.3 路径 C：已运行 `hermes-deploy.sh`
+
+如果已经按 §3.1 生成了 `~/hermes-test/docker-compose.yml`，该编排会引用 `hermes-api:latest` 和 `hermes-worker:latest` 两个本地镜像。此时上传源码到 `~/hermes-test/app`，在虚拟机上构建镜像后再启动：
+
+```bash
+# 虚拟机执行
+mkdir -p ~/hermes-test/app
+tar xzf /tmp/hermes-src.tar.gz -C ~/hermes-test/app
+
+cd ~/hermes-test/app
+docker build -t hermes-api:latest .
+docker tag hermes-api:latest hermes-worker:latest
+
+cd ~/hermes-test
+docker-compose up -d
+docker-compose run --rm api alembic upgrade head
+curl http://localhost:8080/api/v1/health
+```
+
+更新代码时重复上传压缩包并重新构建镜像即可。确认手动部署稳定后，再切换到 §3.6 的 CI/CD 镜像构建和自动拉取。
+
+### 3.6 自动化部署（GitHub Actions 默认，GitLab/极狐可选）
+
+当前仓库已包含 `.github/workflows/deploy.yml` 和 `docker-compose.prod.yml`，默认自动化链路为：**本地 `git push` → GitHub Actions 构建镜像 → 推送 GHCR → SSH 到虚拟机执行 `docker-compose -f docker-compose.prod.yml pull/up`**。
+
+接入前先完成 §3.5 的首次手动部署，并在虚拟机部署目录放好 `docker-compose.prod.yml` 和虚拟机本地 `.env`：
+
+```bash
+# 虚拟机执行
+mkdir -p /opt/hermes
+cp docker-compose.prod.yml /opt/hermes/
+cp .env.example /opt/hermes/.env
+vi /opt/hermes/.env
+```
+
+GitHub 仓库需要配置这些 Actions Secrets：
+
+| Secret | 说明 |
+|--------|------|
+| `VM_HOST` | 虚拟机 IP 或域名 |
+| `VM_USER` | SSH 用户 |
+| `VM_SSH_PRIVATE_KEY` | 可登录虚拟机的私钥 |
+| `VM_DEPLOY_PATH` | 虚拟机部署目录，例如 `/opt/hermes` |
+
+后续日常流程：
+
+```bash
+git add .
+git commit -m "feat: update hermes"
+git push origin main
+```
+
+GitHub Actions 成功后，虚拟机会拉取 `ghcr.io/xuanyuan4612/ercm_agent:latest` 并重启服务。若使用自己的仓库或镜像命名空间，需要同步修改 `.github/workflows/deploy.yml` 中的 `IMAGE_NAME` 和 `docker-compose.prod.yml` 中的 `api.image`。
+
+#### 3.6.1 GitLab / 极狐 CI/CD 替代方案
 
 > 以下方案实现：**本地 `git push` → GitLab 自动构建镜像 → 服务器自动拉取并部署**。
 > 
@@ -778,7 +1160,7 @@ curl http://localhost:8080/api/v1/health
 > - **全自动**：推送代码后无需手动 SSH 操作
 > - **可回滚**：GitLab 上保留历史镜像，出问题随时回退
 
-#### 3.5.1 自动化架构
+#### 3.6.2 GitLab 自动化架构
 
 ```
 ┌──────────────┐     git push      ┌─────────────────────┐
@@ -808,7 +1190,7 @@ curl http://localhost:8080/api/v1/health
                                    └──────────────────────┘
 ```
 
-#### 3.5.2 项目代码结构（完整）
+#### 3.6.3 GitLab 项目代码结构（完整）
 
 ```
 hermes/                          # Git 仓库根目录
@@ -830,7 +1212,7 @@ hermes/                          # Git 仓库根目录
 └── ...
 ```
 
-#### 3.5.3 GitLab CI/CD 流水线配置
+#### 3.6.4 GitLab CI/CD 流水线配置
 
 在仓库根目录创建 `.gitlab-ci.yml`：
 
@@ -903,7 +1285,7 @@ trigger-deploy:
     - build-worker
 ```
 
-#### 3.5.4 docker-compose.yml（使用 GitLab Registry）
+#### 3.6.5 docker-compose.yml（使用 GitLab Registry）
 
 部署时不再依赖 Docker Hub，业务镜像从 GitLab Registry 拉取，基础镜像通过 GitLab 的 Dependency Proxy 拉取：
 
@@ -956,7 +1338,7 @@ services:
 > **GitLab Dependency Proxy**（依赖代理）会缓存 Docker Hub 镜像到你 GitLab 的 Container Registry 中，
 > 服务器只需要访问 GitLab 一个地址即可拉取所有镜像，彻底摆脱 Docker Hub。
 
-#### 3.5.5 服务器端自动部署脚本
+#### 3.6.6 服务器端自动部署脚本
 
 在服务器上创建 `~/hermes-test/deploy/auto-deploy.sh`：
 
@@ -1004,7 +1386,7 @@ echo "=========================================="
 docker-compose ps
 ```
 
-#### 3.5.6 服务器端 Webhook 接收器（可选：纯自动部署）
+#### 3.6.7 服务器端 Webhook 接收器（可选：纯自动部署）
 
 如果你希望 GitLab CI 跑完后自动触发服务器部署（不需要手动操作），在服务器上部署一个轻量 Webhook 接收器：
 
@@ -1084,7 +1466,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now hermes-webhook
 ```
 
-#### 3.5.7 完整自动化流程（日常使用）
+#### 3.6.8 GitLab 完整自动化流程（日常使用）
 
 ```bash
 # ========== 开发者日常工作流 ==========
@@ -1111,7 +1493,7 @@ git push origin main
 ssh root@服务器IP "cd ~/hermes-test && docker-compose ps"
 ```
 
-#### 3.5.8 国内加速配置
+#### 3.6.9 GitLab 国内加速配置
 
 > **如果你的 GitLab 托管在 gitlab.com**（服务器在国外），国内服务器拉镜像也可能慢。
 > 推荐以下方案的任意组合：
@@ -1136,10 +1518,10 @@ git push jihulab main
 # 4. 服务器配置 GitLab Registry 为 jihulab.com
 #    docker-compose.yml 中的 GITLAB_REGISTRY=registry.jihulab.com
 
-# 5. 之后就跟 §3.5.7 的流程一样了
+# 5. 之后就跟 §3.6.8 的流程一样了
 ```
 
-#### 3.5.9 前置条件速查
+#### 3.6.10 GitLab 前置条件速查
 
 | 前置条件 | 说明 |
 |----------|------|
@@ -1179,12 +1561,14 @@ df -h                                                # 系统磁盘
 
 ### 4.2 备份策略
 
+本节用于保护本地/测试数据和演练恢复流程，不构成生产 RPO/RTO 承诺。正式生产备份与恢复以 P1 K8s 高可用架构（Patroni + pgBackRest + WAL 归档）为准。
+
 | 数据 | 方式 | 频率 | 命令 |
 |------|------|------|------|
 | PostgreSQL | `pg_dump` | 每日 | `docker-compose exec -T postgres pg_dump -U hermes -d hermes --format=custom > backup_$(date +%Y%m%d).dump` |
 | Elasticsearch | Snapshot API | 每日 | `curl -X PUT "localhost:9200/_snapshot/hermes_backup/$(date +%Y%m%d)?wait_for_completion=true"` |
 | MinIO 文件 | `rclone` 或 `rsync` | 每日 | `rsync -avz /var/lib/docker/volumes/hermes-test_minio_data/_data/ /backup/minio/` |
-| 配置文件 | Git | 每次变更 | `git add docker-compose.yml .env && git commit -m "config: update"` |
+| 配置文件 | Git + 加密备份 | 每次变更 | `git add docker-compose.yml nginx/ rabbitmq/ init-scripts/ && git commit -m "config: update"`；`.env` 不入 Git，使用 `gpg`/企业密钥库加密备份 |
 
 **快速备份脚本**：
 
@@ -1203,10 +1587,11 @@ docker-compose exec -T postgres pg_dump -U hermes -d hermes --format=custom --co
   > "$BACKUP_DIR/hermes_${DATE}.dump"
 echo "  PG backup: $(du -h $BACKUP_DIR/hermes_${DATE}.dump | cut -f1)"
 
-# 配置文件
-tar czf "$BACKUP_DIR/config_${DATE}.tar.gz" .env docker-compose.yml nginx/ rabbitmq/ init-scripts/
+# 配置文件（.env 含密钥，必须加密；普通配置可进入 Git）
+tar czf "$BACKUP_DIR/config_${DATE}.tar.gz" docker-compose.yml nginx/ rabbitmq/ init-scripts/
+gpg --symmetric --cipher-algo AES256 --output "$BACKUP_DIR/env_${DATE}.gpg" .env
 
-# 清理 30 天前的备份
+# 清理 30 天前的备份（生产清理前需确认已有异地副本）
 find "$BACKUP_DIR" -name "*.dump" -mtime +30 -delete
 
 echo "[$(date)] Backup done"
@@ -1233,19 +1618,21 @@ echo "[$(date)] Backup done"
 
 ### 4.4 扩容路径
 
-当前测试环境基础设施在增加硬件后可直接支持 100 用户 / 5TB 的生产负载：
+当前 D0 Profile 可用于 100 用户 / 5TB 量级的测试、PoC 或容量验证：
 
-| 扩容项 | 当前测试环境 | 生产就绪配置 |
+| 扩容项 | 当前测试环境 | 加强配置 |
 |--------|-------------|-------------|
 | API 实例数 | 1 | `--scale api=3` |
 | ES 内存 | 2GB | 4GB |
 | Redis 内存 | 2GB | 4GB |
 | MinIO 存储 | Docker Volume | 绑定挂载独立 HDD (≥8TB RAID1) |
 | PG 存储 | Docker Volume | 绑定挂载 SSD |
-| 备份 | 手动 / crontab | 自动化 + 异地 |
+| 备份 | 手动 / crontab | 自动化 + 异地 + 定期恢复演练（测试数据） |
 | 监控 | Prometheus + Grafana | + node-exporter + Alertmanager |
+| 密钥 | `.env` 明文 | 文件权限 `600` + 加密备份 + 180 天轮换 |
+| 管理端口 | 直接暴露 | 仅堡垒机/VPN/localhost 访问 |
 
-如需完整的生产级高可用部署（双机热备、K8s 集群等），请参考 `doc/architecture-design.md`。
+如需正式生产部署（K8s 集群、Patroni、pgBackRest、RabbitMQ quorum queues、Vault/External Secrets 等），请参考 `doc/architecture-design.md` 的 P1 Profile。
 
 ---
 
@@ -1290,13 +1677,13 @@ grafana:
 
 ## 附录 B：与架构文档的对照
 
-| 项目 | 本测试环境 | 生产环境 (architecture-design.md) |
+| 项目 | 本地/测试环境 (D0) | 生产环境 (architecture-design.md P1) |
 |------|-----------|----------------------------------|
 | 部署方式 | Docker Compose 单机 | K8s 集群 |
 | 服务器 | 1 台，CentOS 7.6 | 3M+5W+2GPU 节点 |
 | 可用性 | 单机（无 HA） | 99.9%（多副本 + 自动故障转移） |
 | 存储 | Docker Volume | SSD + HDD RAID + NAS 冷归档 |
-| 安全 | 基础防火墙 | HTTS + firewalld + fail2ban + SSH 加固 |
+| 安全 | 基础防火墙 | HTTPS + firewalld + fail2ban + SSH 加固 + 管理端口内网/VPN 限制 |
 | 监控 | Prometheus + Grafana | + Jaeger + LangFuse + Alertmanager |
 | Worker | 1 个合并池 | 9 类独立 HPA 池 |
 | ES | 单节点 2GB | 3 节点集群 4GB/节点 |

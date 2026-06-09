@@ -111,8 +111,18 @@ async def refresh(request: RefreshRequest, db: AsyncSession = Depends(get_db)):
 @router.post("/logout", response_model=dict)
 async def logout(current_user: CurrentUser):
     """登出（使 refresh_token 失效）"""
-    # TODO: 将 refresh_token 加入 Redis 黑名单
-    return success(message="已登出")
+    # 将 refresh_token 加入黑名单（当前降级为无状态登出）
+    try:
+        from fastapi import Request
+        # 尝试获取 Redis 连接加入黑名单
+        # redis_client = current_user._redis
+        # if redis_client:
+        #     await redis_client.sadd("token_blacklist", refresh_token)
+        #     await redis_client.expire("token_blacklist", settings.REFRESH_TOKEN_EXPIRE_SECONDS)
+        pass
+    except Exception:
+        pass
+    return success(message="已登出（当前无状态登出模式，Redis 黑名单待接入）")
 
 
 @router.get("/me", response_model=dict)

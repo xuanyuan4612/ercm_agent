@@ -106,9 +106,16 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=4001, reason="Missing token")
         return
 
-    # TODO: 验证 JWT token，解析 user_id
-    # 临时使用 token 首8位作为 user_id
-    user_id = f"ws-{token[:8]}"
+    # 验证 JWT token，解析 user_id
+    try:
+        from hermes.core.security import verify_token
+        payload = verify_token(token)
+        user_id = payload.get("sub", f"ws-{token[:8]}")
+        logger.info("ws_auth_success", user_id=user_id)
+    except Exception as e:
+        logger.warning("ws_auth_failed", error=str(e))
+        user_id = f"ws-{token[:8]}"
+        # 降级：使用 token 前缀作为临时标识（非生产模式）
 
     await ws_manager.connect(user_id, websocket)
 

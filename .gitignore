@@ -233,3 +233,4 @@ hermes_prompts_cache/
 k8s/secrets/
 .sisyphus/
 uv.lock
+frontend/node_modules

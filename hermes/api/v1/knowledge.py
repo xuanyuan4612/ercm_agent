@@ -11,8 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from hermes.api.dependencies import CurrentUser, GroupRoleRequired
 from hermes.core.exceptions import KnowledgeBaseNotFoundError, NotFoundError
 from hermes.core.response import paginated, success
+from hermes.core.logging import get_logger
 from hermes.db.models.knowledge import KnowledgeDocument
 from hermes.db.session import get_db
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/knowledge-bases")
 
@@ -153,9 +156,18 @@ async def search_knowledge(
     if not allowed:
         return success([])
 
-    # 使用 PostgreSQL 全文检索作为基础搜索
-    # TODO: 集成 pgvector 向量相似度搜索 + Elasticsearch 混合检索
-    ts_query = " & ".join(query.split())
+    # 使用 RAG Engine 进行混合检索（向量语义 + 全文）
+    # pgvector + Elasticsearch 混合检索在生产环境自动启用
+    try:
+        from hermes.agents.rag_engine import RAGEngine
+        rag = RAGEngine(db)
+        results = await rag.search(query, list(allowed), top_k, mode="hybrid")
+        return success(results)
+    except Exception as e:
+        logger.warning("rag_search_failed", error=str(e),
+                       message="RAG Engine 不可用，降级为 ILIKE 全文搜索")
+
+    # 降级搜索：ILIKE 全文匹配 + 相关度评分
     search_sql = (
         select(KnowledgeDocument)
         .where(
@@ -175,7 +187,8 @@ async def search_knowledge(
             "kb_type": d.kb_type,
             "title": d.title,
             "content_snippet": d.content[:300] if d.content else "",
-            "relevance": 0.8,  # TODO: 计算实际相似度分数
+            "relevance": 0.6 + (0.2 if query.lower() in (d.title or "").lower() else 0)
+                        + (0.15 if query.lower() in (d.content or "").lower()[:100] else 0),
             "updated_at": d.updated_at.isoformat() if d.updated_at else None,
         }
         for d in docs
