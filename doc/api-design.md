@@ -21,6 +21,16 @@
 - **时间格式**: ISO 8601（`2026-05-19T10:30:00Z`）
 - **认证**: `Authorization: Bearer <access_token>`（见第二章）
 
+**生产治理请求头**：
+
+| Header | 必填场景 | 说明 |
+|--------|----------|------|
+| `X-Request-Id` | 全部请求 | 客户端或网关生成；写入日志、Trace 和 audit_log |
+| `X-Correlation-Id` | 异步任务 / A2A / Webhook | 串联 API、消息队列、外部回调和 Worker 处理链路 |
+| `Idempotency-Key` | POST/PUT/PATCH 写入类接口 | 防止重复提交；格式建议 `{resource}:{operation}:{business_id}:{payload_hash}` |
+| `X-Hermes-Signature` | Webhook / A2A 回调 | HMAC-SHA256 签名，按 canonical body + timestamp 计算 |
+| `X-Hermes-Timestamp` | Webhook / A2A 回调 | 签名时间戳；服务端默认只接受 5 分钟窗口 |
+
 ### 1.3 统一响应格式
 
 **成功响应**:
@@ -76,6 +86,10 @@
 - 敏感字段（手机号、邮箱、身份证号）返回时脱敏（`138****1234`）
 - DELETE 操作改为软删除（`is_deleted = true`）
 - 文件上传限 50MB，API 速率限制 100 req/min per user
+- P1 生产接入企业 SSO/OIDC/AD，关键操作启用 MFA；D0 本地/测试可使用本地账号/JWT
+- 所有租户相关查询同时执行应用层 `client` 过滤和数据库 RLS，不允许只依赖前端或请求参数过滤
+- 写入类接口必须支持幂等校验；重复请求返回首次处理结果或 `409 duplicate_request`
+- 涉及 AI 输出的高风险操作（处罚执行、外部系统写入、机密下载）必须有人工复核记录
 
 ---
 
@@ -103,7 +117,7 @@ refresh_token 过期 → 重新登录
 | `ecovacs` | 科沃斯事业部数据 | 仅可查看 `client=ecovacs` 的数据 |
 | `tineco` | 添可事业部数据 | 仅可查看 `client=tineco` 的数据 |
 
-行级过滤在应用层实现，所有数据查询按登录角色自动过滤；手动创建资源时只能创建所属角色对应事业部的数据。
+行级过滤在应用层实现，P1 生产同时启用 PostgreSQL RLS 作为兜底控制。所有数据查询按登录角色自动过滤；手动创建资源时只能创建所属角色对应事业部的数据。`group` 角色仅在具备显式全局权限时可跨 `client` 查询。
 
 ### 2.3 认证接口
 
@@ -1663,6 +1677,25 @@ WebSocket 端点: ws://<host>/api/v1/ws
 
 ## 十六、外部系统 Webhook
 
+### 16.0 Webhook 安全与事件契约
+
+所有外部系统 Webhook（风控、OA、MDM、A2A 回调）必须遵循统一事件信封：
+
+```json
+{
+  "schema_version": "webhook.event.v1",
+  "event_id": "uuid",
+  "event": "case_created",
+  "source_system": "risk_control",
+  "correlation_id": "trace-or-task-id",
+  "idempotency_key": "source:event:business_id:payload_hash",
+  "occurred_at": "2026-05-19T10:30:00Z",
+  "payload": {}
+}
+```
+
+调用方必须在 Header 中携带 `X-Hermes-Timestamp` 与 `X-Hermes-Signature`。服务端按 canonical JSON body + timestamp 使用共享密钥做 HMAC-SHA256 校验，并校验来源 IP 白名单。签名失败、时间戳超窗、重复 `idempotency_key` 或跨租户 `client` 不匹配时拒绝处理并写入 `audit_log`。
+
 ### 16.1 风控系统回调
 
 **POST /api/v1/webhooks/risk-control**
@@ -1675,9 +1708,15 @@ WebSocket 端点: ws://<host>/api/v1/ws
 
 ```json
 {
+  "schema_version": "webhook.risk_control.v1",
+  "event_id": "8f1a3b9e-...",
   "event": "case_created",
-  "risk_control_case_id": "RC20260519001",
-  "data": {
+  "source_system": "risk_control",
+  "correlation_id": "RC20260519001",
+  "idempotency_key": "risk_control:case_created:RC20260519001:v1",
+  "occurred_at": "2026-05-19T10:30:00Z",
+  "payload": {
+    "risk_control_case_id": "RC20260519001",
     "fraud_source": "phone",
     "client": "ecovacs",
     "reported_staff_names": ["李四"],
@@ -1708,13 +1747,21 @@ WebSocket 端点: ws://<host>/api/v1/ws
 
 ```json
 {
+  "schema_version": "webhook.risk_control.v1",
+  "event_id": "uuid",
   "event": "status_sync",
-  "hermes_case_id": "c-001",
-  "risk_control_case_id": "RC20260519001",
-  "status": "investigate_in_progress",
-  "synced_fields": {
-    "current_stage": "investigation",
-    "investigation_plan_attached": true
+  "source_system": "risk_control",
+  "correlation_id": "RC20260519001",
+  "idempotency_key": "risk_control:status_sync:RC20260519001:investigation",
+  "occurred_at": "2026-05-19T10:30:00Z",
+  "payload": {
+    "hermes_case_id": "c-001",
+    "risk_control_case_id": "RC20260519001",
+    "status": "investigate_in_progress",
+    "synced_fields": {
+      "current_stage": "investigation",
+      "investigation_plan_attached": true
+    }
   }
 }
 ```
@@ -1723,13 +1770,21 @@ WebSocket 端点: ws://<host>/api/v1/ws
 
 ```json
 {
+  "schema_version": "webhook.risk_control.v1",
+  "event_id": "uuid",
   "event": "closure_confirmed",
-  "hermes_case_id": "c-001",
-  "risk_control_case_id": "RC20260519001",
-  "closure_type": "not_handled",
-  "closure_reason": "证据不足，不予调查",
-  "actual_close_date": "2026-05-19",
-  "attachments": ["intake_report.docx"]
+  "source_system": "risk_control",
+  "correlation_id": "RC20260519001",
+  "idempotency_key": "risk_control:closure_confirmed:RC20260519001:v1",
+  "occurred_at": "2026-05-19T10:30:00Z",
+  "payload": {
+    "hermes_case_id": "c-001",
+    "risk_control_case_id": "RC20260519001",
+    "closure_type": "not_handled",
+    "closure_reason": "证据不足，不予调查",
+    "actual_close_date": "2026-05-19",
+    "attachments": ["intake_report.docx"]
+  }
 }
 ```
 

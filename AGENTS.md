@@ -1,7 +1,7 @@
 # 项目知识库
 
 **生成日期：** 2026-05-20
-**状态：** 实施前设计阶段（尚未编写 Python 源码）
+**状态：** 已有初始后端脚手架；设计文档仍是生产蓝图来源
 **Python：** 3.12
 
 ## 概述
@@ -12,8 +12,11 @@
 
 ```
 ./
-├── doc/              # [源] 设计规范 — 项目全部实质内容
+├── doc/              # [源] 设计规范 — 生产蓝图与模块需求
 │   └── modules/      # 8 个模块需求文档 + 索引
+├── hermes/           # [源码] 初始 FastAPI / LangGraph / 服务层脚手架
+├── tests/            # [测试] 初始单元测试与测试配置
+├── alembic/          # [迁移] 初始数据库迁移
 ├── .venv/            # [环境] Python 3.12 虚拟环境（仅 pip，无项目依赖）
 ├── .idea/            # [IDE] PyCharm 配置 — 不可手动修改
 └── .sisyphus/        # [工具状态] 智能体会话持久化 — 忽略
@@ -31,10 +34,10 @@
 | 模块索引与模块间流程 | `doc/modules/README.md` | 依赖关系图、共享基础设施清单 |
 | CI/CD 流水线设计 | `doc/architecture-design.md` §6.7 | GitLab CI，4 个阶段：Lint → Test → Build → Deploy |
 | 测试策略 | `doc/architecture-design.md` §8.9 | pytest、异步、5 种测试类型 |
-| 简化部署方案 (100 用户) | `doc/deployment-plan-100users.md` | Docker Compose，适合无专职运维团队 |
+| 本地/测试部署方案 (100 用户测试规模) | `doc/deployment-plan-100users.md` | Docker Compose，仅用于本地、测试、PoC 和容量验证 |
 | 生产补充章节 | `doc/architecture-design.md` §8.18-8.24 | 成本、知识库初始化、应急预案、环境方案、模型管理等 |
 
-## 技术栈（规划中）
+## 技术栈（设计目标 / 初始实现中）
 
 | 层级 | 技术 |
 |-------|------|
@@ -66,7 +69,7 @@
 
 ## 反模式（本项目）
 
-尚无 — 不存在任何源码。以下是需要强制执行的**设计层面规则**：
+以下是需要强制执行的实现规则：
 
 - 不允许在最终的 `hermes/` 包目录之外创建新的 `.py` 文件
 - 不允许绕过 LangGraph 的 HITL（人机协作）审批关卡
@@ -75,7 +78,7 @@
 
 ## 命令
 
-尚无可运行的命令。以下为根据架构文档规划的命令：
+以下命令以当前初始脚手架和架构文档规划为准；如实际依赖尚未安装，先执行 `uv sync`：
 
 ```bash
 # 开发
@@ -99,7 +102,7 @@ kubectl apply -f k8s/worker-*-deployments.yaml
 
 ## 备注
 
-- **尚无源码。** 当前 100% 为设计文档。实施应从 `doc/architecture-design.md` §5.1（包脚手架）开始。
-- **尚未初始化 Git 仓库。** 编写代码前请运行 `git init`。
-- **尚无项目配置文件**（`pyproject.toml`、`ruff.toml` 等）— 必须从零创建。
+- **已有初始源码。** 当前仓库包含 `hermes/`、`tests/`、`alembic/` 和 Docker Compose 配置；新增实现应优先遵循现有包结构和设计文档。
+- **Git 仓库已存在时不得重新初始化。** 编写代码前先查看 `git status`，避免覆盖未提交改动。
+- **项目配置文件如不存在再创建。** 不要重复生成或覆盖已有 `pyproject.toml`、`ruff.toml` 等配置。
 - 模块依赖关系图为 DAG（无环）：推送层（M2）→ 执行层（M1、M3、M6）→ 汇聚层（M8），并行层（M4、M5、M7）。

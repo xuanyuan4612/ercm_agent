@@ -2625,6 +2625,23 @@ def scrub_pii(payload: dict) -> dict:
     return payload
 ```
 
+### D.7 消息契约、幂等与 AI 安全基线
+
+本节覆盖所有 Agent，适用于 P1 生产 Profile；D0 Docker Compose 仅用于本地/测试/PoC，也应尽量复用同一契约避免环境差异。
+
+| 领域 | 生产要求 |
+|------|----------|
+| 消息信封 | A2A、外部回调和内部事件必须携带 `schema_version`、`event_id`、`correlation_id`、`idempotency_key` |
+| 幂等 | Redis TTL 去重只作为热路径优化；长期去重以 PostgreSQL `event_inbox` 为准 |
+| Outbox | Agent 触发外部系统写入或跨模块消息时，先写 `event_outbox`，由后台发布到 RabbitMQ quorum queue |
+| 签名 | Webhook/A2A 回调必须校验 HMAC-SHA256 签名、时间戳窗口和来源 IP 白名单 |
+| Replay | DLQ/replay queue 重放必须记录操作者、原因、`event_id` 范围和结果，写入 audit_log |
+| Prompt 注入 | 用户输入、附件文本和外部回调内容均视为不可信数据，不得覆盖 System Prompt、租户过滤和 Tool 权限 |
+| RAG 越权 | KB/ES/SQL 检索必须先注入 `client`、密级和字段权限过滤，跨租户召回直接阻断 |
+| Tool 权限 | SQL、导出、外部推送、处罚执行等高风险 Tool 需按角色、模块、阶段授权；不满足条件进入 human_intervention |
+| 引用校验 | 法规、制度、证据和金额结论必须带来源引用；无法校验时标注"待人工核实" |
+| 黄金/红队测试 | 每个 Agent 的 Golden Test Set 必须包含 Prompt 注入、RAG 越权、PII 泄露、工具越权和幻觉引用用例 |
+
 ### D.8 多租户数据隔离实现
 
 所有Agent在执行KB检索、SQL查询和ES搜索时必须强制执行租户级数据隔离：
@@ -2782,10 +2799,12 @@ class KBQualityMetrics:
 
 ### D.15 Agent 灾难恢复测试策略
 
-| 测试场景 | 频率 | 方式 | 验证指标 | RTO目标 |
+本节仅验证 Agent 的降级、重连和状态恢复能力，不单独定义平台生产 RPO/RTO。P1 生产灾备指标以 `doc/architecture-design.md` §8.20 为准：数据库主库故障 RPO < 5min / RTO < 15min，数据库集群全故障 RPO < 1min / RTO < 2h；D0 本地/测试环境不承诺生产 RPO/RTO。
+
+| 测试场景 | 频率 | 方式 | 验证指标 | 平台目标 |
 |----------|------|------|----------|---------|
-| **DB主库故障** | 每季度 | 主动触发Patroni failover | Agent自动切换读副本→写操作恢复 < 30s | < 30s |
-| **Redis Cluster故障** | 每季度 | Kill Redis主节点 | Checkpointer降级MemorySaver→Agent继续运行 | < 30s |
+| **DB主库故障** | 每季度 | 主动触发Patroni failover | Agent 感知 PgBouncer/Patroni 切换，读路径可降级，写操作在平台 RTO 内恢复；组件探测/重连目标 < 30s | P1 RTO < 15min |
+| **Redis Cluster故障** | 每季度 | Kill Redis主节点 | Checkpointer降级MemorySaver→Agent继续运行 | 组件恢复 < 30s |
 | **LLM API完全不可用** | 每月 | 模拟API 5xx | 自动切换备用LLM→Agent推理继续 | < 5s |
 | **Checkpointer状态损坏** | 每半年 | 手动损坏Redis中某thread_id的状态 | 从PG备份恢复→案件从上一阶段恢复 | < 15min |
 | **Agent Pod全量重启** | 每季度 | `kubectl delete pod --all` in staging | 所有Agent warm-up→恢复处理未完成任务 | < 2min |
@@ -2798,7 +2817,7 @@ class KBQualityMetrics:
 3. 监控Grafana→确认告警触发
 4. 验证Agent自动恢复能力
 5. 手动验证恢复后数据一致性（抽查5个活跃案件）
-6. 输出灾备演练报告（含实际RTO vs 目标RTO + 改进计划）
+6. 输出灾备演练报告（含实际恢复时间、平台RTO对比与改进计划）
 ```
 
 ### D.16 长尾/边缘场景测试用例

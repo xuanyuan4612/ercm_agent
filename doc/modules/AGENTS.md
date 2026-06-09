@@ -41,8 +41,9 @@ DAG — no cycles. Push layer M2 → Execution (M1,M3,M6) → Sink M8. Parallel 
 ## SHARED INFRASTRUCTURE
 
 All modules depend on:
-- **RBAC**: 3-tier (集团/科沃斯/添可)
-- **RAG**: PGVector + Elasticsearch per-stage knowledge bases
-- **A2A**: RabbitMQ communication with 龟宝(HR), 西塞罗(Legal), 波特(Finance)
-- **Audit**: Immutable operation logs, 等保 level 2 compliance
+- **RBAC + tenant isolation**: 3-tier (集团/科沃斯/添可); P1 production must enforce app-level `client` filtering plus PostgreSQL RLS by default.
+- **RAG**: PGVector + Elasticsearch per-stage knowledge bases, with tenant-scoped retrieval and citation validation.
+- **A2A**: RabbitMQ quorum queues with `schema_version`, `event_id`, `correlation_id`, and `idempotency_key`; use Outbox/Inbox, DLQ, replay audit, and consumer idempotency.
+- **Audit**: append-only operation logs, 等保 level 2 compliance, sensitive-data masking, retention/destruction approval.
+- **AI safety**: Prompt injection filtering, RAG over-permission checks, tool-call authorization, hallucination/citation metrics, golden-set and red-team regression gates.
 - **Output**: Word/Excel export, in-text editing (划词调整)
