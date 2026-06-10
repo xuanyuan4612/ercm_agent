@@ -234,3 +234,4 @@ k8s/secrets/
 .sisyphus/
 uv.lock
 frontend/node_modules
+doc/.obsidian
