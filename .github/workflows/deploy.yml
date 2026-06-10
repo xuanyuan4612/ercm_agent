@@ -1,14 +1,13 @@
-# 赫尔墨斯（Hermes）CI/CD 自动部署
+# 赫尔墨斯（Hermes）CI 镜像构建
 # 触发条件: push 到 main 分支
-# 流程: 构建镜像 → 推送阿里云 ACR → SSH 到虚拟机 → 拉取并重启
+# 流程: 构建镜像 → 推送阿里云 ACR → 虚拟机本地手动拉取部署
 
-name: Build & Deploy
+name: Build & Push
 
 on:
   push:
     branches:
       - main
-  # 允许手动触发（GitHub Actions 页面）
   workflow_dispatch:
 
 env:
@@ -16,12 +15,8 @@ env:
   IMAGE_NAME: crpi-qs5r9se4bsjpdlz0.cn-shanghai.personal.cr.aliyuncs.com/xuanyuan111/ercm-agent
 
 jobs:
-  # ── Job 1: 构建镜像并推送到 ghcr.io ──────────────────────
   build-and-push:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write  # 写入 GitHub Container Registry 权限
 
     steps:
       - name: 检出代码
@@ -47,40 +42,3 @@ jobs:
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  # ── Job 2: SSH 到虚拟机并部署 ────────────────────────────
-  deploy:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    environment: hermes-agent
-
-    steps:
-      - name: Debug Secrets
-        run: |
-          echo "Host: ${{ secrets.VM_HOST }}"
-          echo "User: ${{ secrets.VM_USER }}"
-      - name: SSH 到虚拟机并更新容器
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.VM_HOST }}
-          username: ${{ secrets.VM_USER }}
-          key: ${{ secrets.VM_SSH_PRIVATE_KEY }}
-          script: |
-            cd ${{ secrets.VM_DEPLOY_PATH }}
-
-            echo "=== 登录阿里云 ACR ==="
-            echo "${{ secrets.ACR_PASSWORD }}" | docker login --username ${{ secrets.ACR_USERNAME }} --password-stdin crpi-qs5r9se4bsjpdlz0.cn-shanghai.personal.cr.aliyuncs.com
-
-            echo "=== 拉取最新镜像 ==="
-            docker-compose -f docker-compose.prod.yml pull api
-
-            echo "=== 重新启动服务 ==="
-            docker-compose -f docker-compose.prod.yml up -d --remove-orphans
-
-            echo "=== 清理旧镜像 ==="
-            docker image prune -f
-
-            echo "=== 检查服务状态 ==="
-            docker-compose -f docker-compose.prod.yml ps
-
-            echo "=== 部署完成 ==="
