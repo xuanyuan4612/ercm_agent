@@ -8,31 +8,35 @@
 
 赫尔墨斯（Hermes）是面向科沃斯集团的风险控制 AI 智能体系统，基于大语言模型（LLM）+ 检索增强生成（RAG）+ 多智能体协作（A2A）技术构建。系统覆盖风控业务全流程，集成**八大核心功能模块**，形成"**风险发现 → 调查分析 → 处置追责 → 整改闭环**"的完整风控链路。
 
-**当前目标规模（主生产 Profile）**：支撑集团 **10,000 名注册/授权内部用户**、峰值 **500 并发会话/API 请求并发**，管理约 **10TB 文档数据**，处理海量多模态证据材料（音频/视频/图像/PDF），在保持低响应延迟（API P95 < 500ms，不含 LLM 推理）的同时，满足等保二级合规要求。
+**最终生产目标规模**：支撑集团 **10,000 名注册/授权内部用户**、峰值 **500 并发会话/API 请求并发**，管理约 **10TB 文档与证据数据**，处理音频、视频、图像、PDF/Office 等多模态材料；API P95 < 500ms（不含 LLM/异步任务执行时间），满足等保二级、强审计、跨系统集成和长期灾备要求。
 
-#### 部署 Profile 定义
+#### 生产架构边界与权威职责
 
-本文档保留两套部署形态，所有容量、SLO、RPO/RTO、成本和运维要求均需标明适用 Profile。禁止将"10K 注册用户"误写为并发规模。
+本文档描述最终生产架构，不以 MVP、PoC 或分阶段交付为口径。所有模块必须遵守统一的 Workflow、Agent、Tool、Event、Audit 契约，避免 API、Worker、Agent 和外部系统各自推进业务状态。
 
-| Profile | 适用场景 | 规模口径 | 部署形态 | 可用性与恢复目标 |
-|---------|----------|----------|----------|------------------|
-| **P1: K8s 生产高可用** | 集团正式生产、跨部门持续使用、10TB 数据规模 | 10K 注册/授权内部用户；峰值 500 并发；10TB 文档数据 | Kubernetes 多节点 + PostgreSQL Patroni + Redis/RabbitMQ/MinIO/ES 集群 | API 99.9%；DB 主库故障 RPO < 5min / RTO < 15min；DB 集群全故障 RPO < 1min / RTO < 2h；站点灾难 RPO < 1h / RTO < 4h |
-| **D0: 本地/测试 Docker Compose** | 本地开发、测试环境、PoC、演示和容量验证 | 100 用户测试规模；峰值 30 并发以内；5TB 以下测试/脱敏数据 | 单机 Docker Compose；可选备份主机/备份磁盘 | 不作为生产 SLA 承诺；每日备份恢复目标仅用于演练参考 |
+| 权威域                            | 生产职责                                                                                | 禁止事项                        |
+| ------------------------------ | ----------------------------------------------------------------------------------- | --------------------------- |
+| **LangGraph Workflow Runtime** | 唯一工作流状态推进中心；负责阶段路由、HITL 暂停/恢复、重试、人工接管和下游事件触发                                        | API、Worker、Agent 不得直接跳转业务阶段 |
+| **PostgreSQL 业务事实库**           | 存储案件、审批、任务、审计、Outbox/Inbox、权限等业务事实                                                  | 不承担 10TB 级全文/向量检索主负载        |
+| **检索与知识域**                     | Elasticsearch/OpenSearch 承载全文检索；Milvus Distributed 承载大规模向量检索；PostgreSQL 存知识元数据和索引版本 | 业务 OLTP 与大规模向量召回不得共库承压      |
+| **RabbitMQ + Celery**          | 可靠任务分发、异步执行、重试、DLQ、队列积压治理                                                           | 不承载工作流语义，不裁决案件终态            |
+| **Agent 与模型能力域**               | 生成结构化建议、证据摘要、知识引用和下一步建议                                                             | 不直接修改业务终态，不绕过 HITL 执行高风险动作  |
+| **事件集成域**                      | 通过 Adapter、Outbox、Inbox、Webhook 签名、幂等键和审计实现外部系统协作                                   | 不允许直接数据库互写或无审计回调            |
 
 ### 1.2 核心架构能力
 
 | 维度 | 能力描述 |
 |------|----------|
-| **工作流编排** | 基于 LangGraph 的有状态工作流引擎，支持条件路由、断点续跑、人工守门（Human-in-the-Loop） |
-| **知识增强** | 基于 PGVector 的多分区向量检索（RAG），每个业务阶段挂载独立知识库索引；混合检索（向量 + Elasticsearch 全文） |
-| **多智能体协作** | 通过 A2A（Agent-to-Agent）协议与龟宝（HR）、西塞罗（法务）、波特（财务）协同；基于 RabbitMQ 的消息总线保证可靠投递 |
-| **外部系统集成** | 与风控系统、OA 系统（BPM）、MDM 主数据管理系统的双向数据同步；消息队列驱动 + 熔断器保护 |
-| **异步优先架构** | 基于 RabbitMQ 消息队列的全异步处理架构，用户操作立即返回（< 100ms），长耗时任务（多模态处理、报告生成、外部同步、LLM 推理）后台执行（返回 task_id + WebSocket 进度推送）；支持重试、死信、优先级队列 |
+| **工作流编排** | LangGraph 作为唯一 Workflow Runtime，使用 durable checkpointer 持久化 workflow state；HITL、驳回重跑、人工修改、恢复和阶段推进均由工作流语义管理 |
+| **知识增强** | RAG 由统一 RAG Orchestrator 编排：Elasticsearch/OpenSearch 全文召回 + Milvus 向量召回 + metadata filter + rerank + 引用追溯；pgvector 仅作为轻量/局部检索能力 |
+| **多智能体协作** | A2A 被定义为企业事件集成协议，包含消息信封、schema_version、trace_id、idempotency_key、callback_url、签名、Outbox/Inbox 和回调确认 |
+| **外部系统集成** | 风控、OA/BPM、MDM、HR、法务、财务系统通过 Adapter 接入；所有外发事件先写 Outbox，所有回调先写 Inbox 并完成验签、去重、审计 |
+| **异步优先架构** | RabbitMQ quorum queues + Celery Worker 承担长耗时任务，Worker 写任务结果并发布完成事件，由 Workflow Runtime 恢复流程；Worker 不直接推进业务阶段 |
 | **多模态处理管道** | 独立处理管线：音频（Whisper ASR + 说话人分离）、图像（PaddleOCR + CLIP 分类）、视频（OpenCV 关键帧 + 场景分析）、文档（unstructured.io PDF/Office 解析）；GPU 加速处理 |
-| **数据分层存储** | 三层热温冷数据分级：热数据（活跃案件 < 90天）存 PostgreSQL + pgvector；温数据（近期归档 90天-2年）存 MinIO 对象存储；冷数据（历史 > 2年）存 NAS/磁带归档；自动迁移策略 + 可搜索元数据索引 |
+| **数据分层存储** | PostgreSQL 存业务事实与审计事实；Redis 做缓存、限流、会话等热路径；MinIO 存对象与报告；Elasticsearch/OpenSearch 和 Milvus 独立承载检索负载；冷数据归档到 NAS/磁带 |
 | **水平弹性伸缩** | 所有服务均无状态设计，基于 Kubernetes 自动扩缩容；API 层 3-20 实例（HPA）；Worker 按任务类型分 9 个独立池独立扩缩 |
 | **CDN 与缓存** | Nginx 缓存层 + Redis Cluster 提供文档预览/缩略图 CDN 分发；热点查询缓存加速（5min TTL）；视频 HLS 自适应码率分段流 |
-| **可观测性** | LangFuse + Prometheus + structlog + Jaeger 四层监控体系，覆盖 LLM 调用、API 性能、分布式追踪、业务指标。Grafana 统一仪表板 |
+| **可观测性** | OpenTelemetry 统一 trace/metrics/logs 接入标准，trace_id 贯穿 API、Workflow、Worker、LLM、RAG、Tool、外部系统；Prometheus/Grafana、LangFuse、Jaeger/Tempo、structlog 统一治理 |
 | **分层记忆** | L1 感知记忆 (即时上下文) → L2 会话记忆 (多轮对话) → L3 案例记忆 (案件全生命周期) → L4 组织记忆 (跨案件知识沉淀)。记忆从短到长逐层固化，支持跨案件学习与经验复用 |
 
 ### 1.3 系统边界
@@ -78,38 +82,119 @@
 |------|------|----------|
 | **关注点分离 (SoC)** | 业务模块独立部署，共享基础设施横向复用 | 8 个业务模块各自维护独立的 LangGraph 子图；共享认证、知识库、审计日志等横切服务 |
 | **人机协同 (HITL)** | 每个工作流阶段碳基守门，AI 辅助决策、人工最终确认 | LangGraph `interrupt_before` 机制在每个阶段节点前挂起等待人工审批 |
-| **有状态工作流** | 支持案件断点续跑、阶段回溯、人工介入后恢复 | Redis Cluster-based Checkpointer 持久化工作流状态，支持 LangGraph thread 级别恢复 |
-| **知识驱动** | 各阶段决策基于结构化知识库而非仅依赖 LLM 参数记忆 | PGVector 多分区向量检索 + Elasticsearch 混合检索，每阶段注入对应知识库上下文到 LLM Prompt |
-| **协议解耦** | 外部系统通过 Adapter 模式隔离，不直接耦合 | 风控系统、OA、MDM、A2A 均通过独立 Adapter 封装，支持协议变更时最小化影响面 |
+| **有状态工作流** | 支持案件断点续跑、阶段回溯、人工介入后恢复 | PostgreSQL durable checkpointer 或等价持久化方案保存 workflow state；Redis 仅作为热缓存 |
+| **知识驱动** | 各阶段决策基于结构化知识库和证据引用，而非仅依赖 LLM 参数记忆 | RAG Orchestrator 编排 Elasticsearch/OpenSearch、Milvus、metadata filter、rerank 和引用追溯 |
+| **协议解耦** | 外部系统通过 Adapter + 事件契约隔离，不直接耦合 | 风控、OA/BPM、MDM、A2A 均走 Outbox/Inbox、签名、幂等和审计 |
 | **安全内建 (Security by Design)** | 等保二级要求嵌入架构设计而非事后修补 | JWT + RBAC + AES-256-GCM 字段加密 + 全量审计日志 + 软删除 |
-| **弹性设计** | 关键节点失败自动重试，不可恢复时降级至人工接管 | 每个 StageNode 定义 max_retries 和 timeout；RabbitMQ 消息队列保证异步可靠性 + 死信队列 |
-| **异步优先 (Async-First)** | 所有重计算操作（多模态处理、报告生成、外部同步、LLM 推理）异步执行，用户 API 立即返回 task_id | 基于 RabbitMQ 的消息驱动架构，9 类独立 Worker Pool（audio/image/video/doc/report/sync/a2a/llm/kb）；用户通过 WebSocket 或轮询获取结果 |
-| **数据分层 (Data Tiering)** | 按数据访问频率和生命周期分层存储，控制热存储成本 | 热层（活跃案件 < 90天）：PostgreSQL 主库 + pgvector；温层（近期归档 90天-2年）：MinIO 对象存储；冷层（历史 > 2年）：NAS/磁带归档；自动迁移策略与可搜索元数据索引 |
+| **弹性设计** | 关键节点失败自动重试，不可恢复时降级至人工接管 | Workflow 节点定义 max_retries/timeout；RabbitMQ 负责任务重投递和 DLQ；失败恢复由 Workflow Runtime 裁决 |
+| **异步优先 (Async-First)** | 所有重计算操作异步执行，用户 API 返回命令受理结果或 task_id | Worker 完成后写任务结果并发布事件；Workflow Runtime 消费事件后恢复节点 |
+| **数据分层 (Data Tiering)** | 按数据访问频率、负载类型和生命周期分层存储 | 业务事实库、全文检索库、向量检索库、对象存储、缓存和冷归档物理隔离，避免单一数据库承载所有负载 |
 | **水平扩展 (Horizontal Scale)** | 所有服务无状态，独立水平扩展 | API 层：K8s HPA 自动扩缩 3-20 实例；Worker 层：按任务类型独立 Pod 池扩缩；数据库：主从读写分离 + 2 读副本 |
 | **多模态管道 (Multimodal Pipeline)** | 每种媒体类型独立处理管线，充分利用 GPU 加速，处理结果统一索引 | 音频管道（Whisper + 说话人分离）；图像管道（PaddleOCR + CLIP 分类）；视频管道（OpenCV 关键帧 + 场景分析）；文档管道（unstructured.io PDF/Office 解析） |
 | **渐进加载 (Progressive Loading)** | 大文件不阻塞用户交互，先预览后加载 | 文档缩略图预生成 + 分页流式加载；视频 HLS 分段传输；音频流式播放；文件 Range 分段下载 |
-| **渐进交付** | 支持按模块分期实施，共享基础设施先行 | Phase 1 先交付基础骨架 + 廉洁监察模块 + 基础设施升级（K8s/消息队列/ES）；其余模块基于共享底座按需扩展 |
+| **统一生产契约** | 8 大模块全部遵守同一套 Workflow、Agent、Tool、Event、Audit 契约 | 新模块只扩展业务 Graph 和 Agent，不改变底层运行语义和审计规则 |
 
 ### 2.2 关键架构决策 (ADR)
 
 | ADR # | 决策 | 理由 | 替代方案（已否决） |
 |-------|------|------|-------------------|
 | ADR-001 | 使用 LangGraph 而非自研工作流引擎 | 原生支持 Checkpointer、interrupt、条件路由、streaming；LangChain 生态集成 | 自研状态机（维护成本高）；Temporal（过重，不适合 LLM 工作流） |
-| ADR-002 | PGVector 而非独立向量数据库 | 减少运维复杂度；与业务数据共库，支持事务一致性；pgvector 0.7+ HNSW 索引性能已满足规模需求（配合索引优化与分区） | Milvus（部署重）；Pinecone（SaaS 外部依赖） |
+| ADR-002 | 业务事实库与知识检索库物理隔离 | 10TB 文档和大规模知识库场景下，OLTP、审计、审批与向量召回共库会放大锁、IO、备份和恢复风险；生产采用 PostgreSQL 业务库 + Elasticsearch/OpenSearch 全文检索 + Milvus Distributed 向量检索 | 单一 PostgreSQL + pgvector 承载全部负载（运维简单但生产风险高）；外部 SaaS 向量库（数据出域风险） |
 | ADR-003 | RabbitMQ + Celery 替换原有 Celery + Redis 直接架构 | 10K 注册用户/峰值 500 并发下需要可靠的消息持久化、quorum queues、消息优先级、死信队列（DLX）、联邦支持；RabbitMQ 提供企业级可靠性 | Redis 直接做队列（持久化弱，无原生优先级）；Kafka（日志语义，不适合任务队列场景） |
-| ADR-004 | DeepSeek 为主 LLM，通义千问为备 | DeepSeek 中文能力优秀，API 兼容 OpenAI 格式，成本可控；通义千问作为降级备份 | GPT-4（成本高）；文心一言（API 兼容性差） |
+| ADR-004 | Model Gateway + Provider Adapter | DeepSeek、Qwen 和私有模型 endpoint 均通过 OpenAI-compatible 或 provider adapter 接入；模型路由、熔断、灰度、成本和质量评估由 Model Registry + Routing Policy 管理 | 在代码和文档中硬编码某个模型版本 |
 | ADR-005 | 知识库离线本地管理，无飞书 API 依赖 | 等保要求数据不出内网；离线管理满足知识库低频更新场景 | 飞书 API 同步（外部网络依赖） |
-| ADR-006 | Elasticsearch 作为全文搜索引擎 | 10TB 文档规模下，PostgreSQL 全文检索无法满足 P95 < 200ms 要求；ES 提供分布式倒排索引 + IK 中文分词 + 聚合分析 | PostgreSQL FTS（扩展性不足）；Solr（社区不如 ES 活跃） |
+| ADR-006 | Elasticsearch 9.x / OpenSearch 作为全文检索域 | 10TB 文档规模下，PostgreSQL FTS 不应承担主全文检索；生产默认 Elasticsearch 9.x，若企业许可或开源策略限制则切换 OpenSearch，二者均隐藏在 Search Adapter 后 | PostgreSQL FTS 作为主检索（扩展性不足）；直接在业务代码耦合某一搜索产品 |
 | ADR-007 | PaddleOCR 为中文 OCR 引擎（自部署） | 中文场景准确率 > Tesseract；支持表格识别、印章检测、版面分析；GPU 加速；纯内网部署，满足等保要求 | Tesseract（中文弱）；百度 OCR API（外部依赖） |
 | ADR-008 | Whisper large-v3（自部署）为语音转文字引擎 | 开源、多语言支持、GPU 加速、可批量离线处理；1 小时音频 < 5 分钟处理（V100 GPU） | 阿里云语音识别（外部依赖、按量计费）；讯飞（API 限额） |
-| ADR-009 | Kubernetes 替代 Docker Compose | P1 Profile 的 10K 注册用户、峰值 500 并发和 10TB 数据规模需要自动扩缩容、滚动更新、健康检查、资源调度；Docker Compose 仅适合单机原型验证 | Docker Swarm（功能弱）；Nomad（生态小） |
-| ADR-010 | Jaeger 分布式追踪 | 微服务化后需要跨服务调用链追踪，Jaeger 支持 OpenTelemetry、采样策略灵活（正常 10%，错误 100%） | Zipkin（功能类似但社区不如 Jaeger 活跃）；SkyWalking（偏 Java 生态） |
+| ADR-009 | Kubernetes 作为最终生产运行平台 | 10K 注册用户、峰值 500 并发和 10TB 数据规模需要自动扩缩容、滚动更新、健康检查、资源调度和 Operator 治理；Docker Compose 仅属于非生产辅助工具 | Docker Swarm（功能弱）；Nomad（生态小） |
+| ADR-010 | OpenTelemetry 作为统一可观测性标准 | FastAPI、Celery、LangGraph、LLM、RAG、Tool 和外部系统必须共享 trace_id；Jaeger/Tempo 只是 trace backend，可替换但采集标准统一 | 各组件各自打日志和 trace，无法串联端到端链路 |
+| ADR-011 | PostgreSQL durable checkpointer 而非 Redis 唯一 checkpointer | HITL 可能暂停数小时到数周，workflow state 必须具备数据库级持久化、备份、恢复和审计关联；Redis 只做热路径缓存 | Redis Cluster 作为唯一 workflow state 权威（恢复和审计风险） |
+
+### 2.3 生产架构关键修正
+
+| 修正项 | 生产落地口径 |
+|--------|--------------|
+| **Redis Checkpointer 改为 durable checkpointer** | 生产 HITL 必须能长期暂停和恢复，PostgreSQL durable checkpointer 为权威；Redis 只做热路径缓存和临时加速。 |
+| **pgvector 从业务库中拆出** | 10TB 文档量下，业务 OLTP、审计、审批和向量召回不得共库承压；Milvus Distributed 承载大规模向量检索，pgvector 只保留轻量场景。 |
+| **A2A 改成企业事件集成架构** | A2A 必须具备消息信封、schema_version、trace_id、idempotency_key、callback_url、签名、Outbox、Inbox、回调确认和审计链。 |
+| **Celery 不承担工作流语义** | Celery 是任务执行器，RabbitMQ 是消息传输层，LangGraph 才是流程状态机；Worker 完成后发布事件，由 Workflow Runtime 恢复节点。 |
+| **OpenTelemetry 优先** | trace_id 贯穿 API、Workflow、Worker、LLM、RAG、Tool、外部系统；Jaeger/Tempo、Prometheus、日志和 LangFuse 都以同一 trace 关联。 |
+| **LLM 不硬编码模型名** | DeepSeek、Qwen、私有模型 endpoint 均进入 Model Gateway；模型版本、路由、熔断、灰度、成本和质量评估由 Model Registry 管理。 |
 
 ---
 
 ## 三、系统分层架构
 
-### 3.1 分层架构图
+### 3.1 最终生产主架构：6 个主运行层 + 3 个横切治理面
+
+Hermes 的最终生产架构不把所有能力都堆成纵向分层，而是拆成 **6 个主运行层** 和 **3 个横切治理面**。主运行层描述一次业务请求、工作流推进、Agent 分析、检索、异步任务、数据落库的真实运行链路；横切治理面贯穿所有运行层，负责安全、可观测性、质量、平台和交付治理。
+
+这种表达更接近企业生产项目的实际组织方式：研发团队按运行链路拆服务和模块，安全、观测、平台团队按治理面建立统一标准，避免"层数很多但边界重复"。
+
+```mermaid
+flowchart TB
+    subgraph RUN["主运行链路：6 个主运行层"]
+        A["1.接入与业务应用层<br/>Vue SPA / FastAPI / WebSocket / Webhook / Ingress / WAF / SSO<br/>案件 / 审批 / 任务中心 / 文档 / 权限 / 审计查询"]
+        B["2.工作流运行层<br/>LangGraph Runtime / durable checkpointer / HITL interrupt+resume"]
+        C["3.Agent 与模型能力层<br/>Model Gateway / Provider Adapter / Prompt Manager / Tool Registry / Memory / Evaluator"]
+        D["4.知识检索与文档智能层<br/>RAG Orchestrator / Elasticsearch or OpenSearch / Milvus / OCR / ASR / rerank"]
+        E["5.异步任务与事件集成层<br/>RabbitMQ quorum queues / Celery Worker / Outbox / Inbox / A2A Adapter / DLQ / KEDA"]
+        F["6.数据与存储层<br/>PostgreSQL business facts + checkpoint / Redis hot cache / MinIO / NAS archive"]
+    end
+
+    subgraph GOV["横切治理面：贯穿所有运行层"]
+        G1["安全与权限治理<br/>SSO / RBAC / RLS / encryption / Vault or KMS / presigned URL / audit"]
+        G2["可观测性与质量治理<br/>OpenTelemetry / Prometheus / Grafana / Jaeger or Tempo / LangFuse / trace_id"]
+        G3["平台与交付治理<br/>Kubernetes / Operators / Helm / Argo CD or GitLab CI / SBOM / backup drill"]
+    end
+
+    A --> B
+    B --> C
+    C --> D
+    B --> E
+    E --> B
+    B --> F
+    C --> F
+    D --> F
+    E --> F
+    RUN -. governed by .-> G1
+    RUN -. observed by .-> G2
+    RUN -. delivered by .-> G3
+```
+
+### 3.2 主运行层职责与状态权威
+
+| 主运行层 | 生产职责 | 状态权威 | 关键技术 |
+|----------|----------|----------|----------|
+| **接入与业务应用层** | 前端交互、REST/WebSocket/Webhook 接入、TLS/WAF/SSO 入口、权限校验、业务命令受理、查询聚合、审批界面、任务中心、文档管理和审计查询 | PostgreSQL 中的业务事实；本层不直接推进 workflow 阶段 | Vue 3、FastAPI ASGI、Ingress/Nginx、企业 SSO/OIDC、SQLAlchemy async、RBAC |
+| **工作流运行层** | 唯一流程推进中心；负责阶段路由、HITL、重试、恢复、人工接管、节点重跑和下游事件触发 | LangGraph durable checkpoint + 业务表关联 | LangGraph、PostgreSQL checkpointer、interrupt/resume |
+| **Agent 与模型能力层** | 结构化建议生成、证据摘要、知识引用、Tool 编排、模型路由、熔断、灰度、成本和质量评估 | Agent 调用记录、Prompt/模型版本和结构化 stage_output | Model Gateway、Provider Adapter、Model Registry、Prompt Manager、Tool Registry、LangFuse |
+| **知识检索与文档智能层** | 文档解析、OCR、ASR、全文召回、向量召回、metadata filter、rerank、引用追溯和知识版本管理 | Search index + vector index + PostgreSQL knowledge metadata | Elasticsearch 9.x/OpenSearch、Milvus Distributed、unstructured.io、PaddleOCR、Whisper、Reranker |
+| **异步任务与事件集成层** | 长耗时任务执行、消息可靠投递、重试、DLQ、任务状态、队列扩缩容、Outbox/Inbox、外部系统 Adapter、A2A 消息信封、签名、幂等和回调确认 | task_state、event_outbox、event_inbox、外部同步日志；不裁决业务终态 | RabbitMQ quorum queues、Celery、KEDA、Adapter、Webhook、HMAC |
+| **数据与存储层** | 业务事实、审计事实、workflow checkpoint、对象文件、报告、缓存、归档、备份和恢复 | PostgreSQL、MinIO、Redis、NAS/归档存储；PostgreSQL 是业务事实和 checkpoint 权威 | PostgreSQL 18/17/16、CloudNativePG/Patroni、Redis Cluster、MinIO Operator、PgBouncer、WAL 归档 |
+
+### 3.2.1 横切治理面
+
+| 横切治理面 | 覆盖范围 | 生产落地要求 | 关键技术 |
+|------------|----------|--------------|----------|
+| **安全与权限治理** | API、Workflow、Agent、RAG、对象存储、外部回调、运维入口 | SSO、RBAC、租户隔离、PostgreSQL RLS、敏感字段列级加密、对象服务端加密、短期预签名 URL、Webhook 验签、密钥托管、append-only 审计 | 企业 SSO/OIDC、RBAC、RLS、Vault/KMS、External Secrets Operator、HMAC、audit_log 分区表 |
+| **可观测性与质量治理** | API、Workflow、Worker、LLM、RAG、Tool、外部系统调用 | trace_id 贯穿全链路；统一采集 logs/metrics/traces；监控 LLM token、Prompt 版本、RAG 命中、Agent 通过率、人工驳回率和成本 | OpenTelemetry、Prometheus、Grafana、Jaeger/Tempo、LangFuse、structlog |
+| **平台与交付治理** | 应用服务、状态型组件、发布流水线、镜像、依赖、备份恢复 | Kubernetes 作为生产运行平台；状态型组件优先 Operator；Helm/GitOps 管理部署；镜像扫描、SBOM、漏洞治理、容量压测和灾备演练纳入门禁 | Kubernetes、CloudNativePG/Patroni、ECK/OpenSearch Operator、MinIO Operator、Prometheus Operator、Helm、Argo CD/GitLab CI |
+
+### 3.3 核心运行契约
+
+1. API 收到请求后，只创建业务命令、业务事实或 workflow 实例，不直接跳阶段。
+2. Workflow Runtime 读取业务上下文，调用 Agent 或派发异步任务。
+3. Agent 通过 RAG 和 Tool Registry 生成结构化阶段输出，不直接修改案件终态。
+4. 长任务进入 RabbitMQ，由 Celery Worker 执行；Worker 写任务结果并发布完成事件。
+5. Workflow Runtime 消费任务完成事件并恢复对应节点。
+6. 高风险节点通过 LangGraph interrupt 暂停，等待人工审批。
+7. 人工审批写入 approval、audit_log，并把修改后的内容回写 workflow state。
+8. Workflow 继续推进，必要时通过 Outbox 通知外部系统。
+9. 外部系统回调进入 Inbox，验签、去重、审计后恢复流程。
+10. 案件关闭后生成归档、整改问题、管理报告和可追溯审计链。
+
+### 3.4 物理组件拓扑参考图
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────┐
@@ -155,7 +240,7 @@
 │  │  ├── 风险监控 Graph (6 节点)                ├── 离任审计 Graph (6 节点)     │     │
 │  │  ├── 内控评价 Graph (13 节点)               ├── 商业秘密 Graph (3 功能)     │     │
 │  │  ├── 行为风险 Graph (2 功能)                └── 持续改善 Graph (5 子模块)   │     │
-│  │  ├── Checkpointer (Redis Cluster)  ←→  断点续跑 / 状态恢复                 │     │
+│  │  ├── Durable Checkpointer (PostgreSQL) + Redis 热缓存 ←→ 断点续跑 / 状态恢复 │     │
 │  │  └── interrupt_before 机制  ←→  碳基守门 (HITL)                            │     │
 │  └──────────────────────────────────────────────────────────────────────────┘     │
 ├──────────────────────────────────────────────────────────────────────────────────┤
@@ -176,19 +261,19 @@
 │  │  │                   文档管道 (Document Pipeline)               │           │     │
 │  │  │  unstructured.io / LlamaParse → PDF/Word/Excel/PPT 解析      │           │     │
 │  │  │  ├── 文本提取 + 表格抽取 + 层次结构识别                      │           │     │
-│  │  │  ├── 章节切分 (Chunking) → Embedding → PGVector 索引        │           │     │
+│  │  │  ├── 章节切分 (Chunking) → Embedding → Milvus 索引          │           │     │
 │  │  │  └── 缩略图预生成 → MinIO + CDN                               │           │     │
 │  │  └─────────────────────────────────────────────────────────────┘           │     │
 │  │                                                                           │     │
-│  │  所有处理结果 → Elasticsearch 全文索引 + PGVector 向量索引                    │     │
+│  │  所有处理结果 → Elasticsearch/OpenSearch 全文索引 + Milvus 向量索引             │     │
 │  └──────────────────────────────────────────────────────────────────────────┘     │
 ├──────────────────────────────────────────────────────────────────────────────────┤
 │                        Agent 核心层 (LLM 推理 + RAG + 搜索)                         │
 │  ┌──────────────────────────────────────────────────────────────────────────┐     │
 │  │  ┌──────────────┐  ┌───────────────┐  ┌───────────────┐  ┌───────────┐  │     │
 │  │  │ LLM Adapter  │  │ RAG Engine    │  │ Tool System   │  │ Prompt    │  │     │
-│  │  │ DeepSeek 主  │  │ PGVector      │  │ 语音转文字     │  │ Manager   │  │     │
-│  │  │ 通义千问 备  │  │ 多KB 分区     │  │ 文档解析      │  │ YAML模板  │  │     │
+│  │  │ Model Gateway│  │ Milvus        │  │ 语音转文字     │  │ Manager   │  │     │
+│  │  │ 多Provider   │  │ 向量集合       │  │ 文档解析      │  │ YAML模板  │  │     │
 │  │  │ LangFuse追踪 │  │ Embedding     │  │ SQL 分析      │  │ 版本化     │  │     │
 │  │  │ 优先级队列    │  │ Re-ranking    │  │ 图像识别      │  │ 热加载    │  │     │
 │  │  │ 速率限制     │  │ 混合检索(ES)  │  │ ES 全文检索    │  └───────────┘  │     │
@@ -215,13 +300,12 @@
 ├──────────────────────────────────────────────────────────────────────────────────┤
 │                    数据分层存储层 (Tiered Data Storage Layer)                        │
 │                                                                                   │
-│  ┌─────────── 热层 (Hot): PostgreSQL 16 Cluster + pgvector ───────────────────┐   │
+│  ┌─────────── 业务事实库: PostgreSQL 18/17/16 HA Cluster ────────────────────┐   │
 │  │  Patroni Primary + 2 Read Replicas | PgBouncer 连接池 (pool_size=500)     │   │
-│  │  业务数据(活跃<90天) | 用户/权限 | RBAC配置 | 向量检索(RAG,活跃KB)         │   │
-│  │  审计日志(近6个月) | 任务状态 | 表分区(按年+客户)                         │   │
+│  │  案件/审批/任务 | 用户/权限 | RBAC配置 | Outbox/Inbox | 审计日志 | 表分区   │   │
 │  └──────────────────────────────────────────────────────────────────────────────┘   │
 │  ┌─────────── 热缓存层 (Hot Cache): Redis 7 Cluster ─────────────────────────┐   │
-│  │  3 主 3 从集群 | Session | Checkpointer | 限流计数 | 热点缓存(5min TTL)   │   │
+│  │  3 主 3 从集群 | Session | 限流计数 | 热点缓存 | checkpoint 热缓存     │   │
 │  └──────────────────────────────────────────────────────────────────────────────┘   │
 │  ┌─────────── 温层 (Warm): MinIO 多节点集群 ─────────────────────────────────┐   │
 │  │  4 节点 EC 12+4, ~20TB | 附件 | 文档/报告 | 音视频 | 缩略图(CDN源)       │   │
@@ -229,8 +313,11 @@
 │  ┌─────────── 冷层 (Cold): NAS / 磁带归档 ───────────────────────────────────┐   │
 │  │  历史案件(>2年) | 保留10年 | 元数据索引(ES) | 按需恢复(SLA < 24h)         │   │
 │  └──────────────────────────────────────────────────────────────────────────────┘   │
-│  ┌─────────── 搜索引擎: Elasticsearch 3 节点集群 ────────────────────────────┐   │
-│  │  全量文档全文索引 | IK Analyzer 中文分词 | 审计日志(1年可搜索)             │   │
+│  ┌─────────── 全文检索: Elasticsearch 9.x / OpenSearch 集群 ────────────────┐   │
+│  │  全量文档全文索引 | 中文分词 | 审计日志(1年可搜索) | Search Adapter       │   │
+│  └──────────────────────────────────────────────────────────────────────────────┘   │
+│  ┌─────────── 向量检索: Milvus Distributed ────────────────────────────────┐   │
+│  │  知识库/证据向量召回 | metadata filter | rerank 前候选集 | 模块集合隔离     │   │
 │  └──────────────────────────────────────────────────────────────────────────────┘   │
 │  ┌─────────── 消息队列: RabbitMQ 3 节点 quorum queues 集群 ─────────────────┐   │
 │  │  audio/img/video/doc/report/sync/a2a/llm/kb 9个队列 + DLX死信队列        │   │
@@ -261,22 +348,22 @@
 └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.2 分层职责
+### 3.5 物理组件职责补充
 
 | 层级 | 职责 | 关键组件 | 对外依赖 |
 |------|------|----------|----------|
 | **呈现层** | 用户交互界面，多模态证据查看器，内嵌风控系统 Web 组件 | Vue 3 SPA, Element Plus, Tiptap, HLS.js, PDF.js, Wavesurfer.js | Nginx 网关, CDN |
 | **CDN & 缓存层** | SSL 终结、静态资源分发、文档预览缓存、API 负载均衡、速率限制 | Nginx (含 ngx_http_slice_module, least_conn) | — |
 | **网关层** | RESTful API 暴露、WebSocket 推送、Webhook 接收、文件上传代理 | FastAPI Router Pool (K8s HPA), JWT 中间件 | Service 层, RabbitMQ |
-| **工作流引擎层** | 工作流调度、状态管理、碳基守门流转 | LangGraph StateGraph, Redis Cluster Checkpointer | Agent 核心层, 多模态处理层 |
+| **工作流引擎层** | 工作流调度、状态管理、碳基守门流转 | LangGraph StateGraph, PostgreSQL durable checkpointer, Redis 热缓存 | Agent 核心层, 异步任务层 |
 | **多模态处理层** | 音频/图像/视频/文档的 AI 处理、文本提取、结构化转换 | Whisper, PaddleOCR, CLIP, OpenCV, unstructured.io | MinIO, RabbitMQ, GPU |
-| **Agent 核心层** | LLM 推理、知识检索、Tool 调用、Prompt 管理、全文检索 | LLMAdapter, PGVector, Elasticsearch, Tool System | 集成层, 多模态处理层 |
-| **集成层** | 外部系统协议适配、A2A 多智能体通信 | System Adapters, A2A Bus (RabbitMQ) | 外部系统 |
+| **Agent 核心层** | LLM 推理、知识检索、Tool 调用、Prompt 管理、结构化输出 | Model Gateway, RAG Orchestrator, Milvus, Elasticsearch/OpenSearch, Tool Registry | 工作流层, 检索层, 多模态处理层 |
+| **集成层** | 外部系统协议适配、A2A 企业事件通信 | System Adapters, A2A Bus, Outbox/Inbox, Webhook 签名 | 外部系统 |
 | **中间件层** | 横切关注点：认证、审计、权限过滤、限流 | FastAPI Middleware Stack | — |
-| **数据分层存储层** | 三层热温冷持久化：业务数据、向量索引、缓存、文件、全文索引、消息队列、Worker Pool | PostgreSQL Cluster, Redis Cluster, MinIO Cluster, NAS/磁带, Elasticsearch, RabbitMQ, Celery Worker Pool | — |
-| **可观测性层** | LLM 调用追踪、系统指标、分布式追踪、业务日志 | LangFuse, Prometheus, structlog, Jaeger, Grafana | — |
+| **数据分层存储层** | 业务事实、审计、全文索引、向量索引、缓存、文件、冷归档、消息队列、Worker Pool | PostgreSQL HA, Redis Cluster, MinIO, NAS/磁带, Elasticsearch/OpenSearch, Milvus, RabbitMQ, Celery Worker Pool | — |
+| **可观测性层** | LLM 调用追踪、系统指标、分布式追踪、业务日志 | OpenTelemetry, LangFuse, Prometheus, structlog, Jaeger/Tempo, Grafana | — |
 
-### 3.3 多模态处理管道详情
+### 3.6 多模态处理管道详情
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────┐
@@ -288,7 +375,7 @@
 │  │  ├─[Whisper large-v3] → 语音转文字 (含时间戳)                               │   │
 │  │  ├─[pyannote.audio]   → 说话人分离 (Speaker Diarization)                    │   │
 │  │  ├─[语言检测]         → 自动识别中/英/混合                                   │   │
-│  │  └─后处理: 结构化转录JSON → ES全文索引 + PGVector向量索引                     │   │
+│  │  └─后处理: 结构化转录JSON → 全文索引 + Milvus 向量索引                       │   │
 │  │  性能: 1小时音频 → < 5 分钟 (V100 GPU)                                      │   │
 │  └────────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                  │
@@ -299,7 +386,7 @@
 │  │  ├─[版面分析]    → Layout Detection (标题/正文/表格/图片区域)                │   │
 │  │  ├─[表格识别]    → 结构化表格提取 (行/列/单元格)                             │   │
 │  │  ├─[CLIP/ViT]    → 图像分类/标签 (证据类型/场景)                             │   │
-│  │  └─后处理: 文本+表格 → ES + PGVector; 缩略图 → MinIO + CDN                  │   │
+│  │  └─后处理: 文本+表格 → Search Adapter + Milvus; 缩略图 → MinIO + CDN        │   │
 │  │  性能: 单页OCR < 2s; 100页扫描PDF < 3 分钟                                  │   │
 │  └────────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                  │
@@ -322,12 +409,12 @@
 │  │  ├─[LlamaParse] (备选) → 复杂PDF(多栏/扫描件)高精度解析                      │   │
 │  │  ├─[Chunking] → 智能分块 (语义边界, 512-2048 tokens/chunk)                 │   │
 │  │  ├─[Embedding] → text-embedding-3-large → 1536d 向量                        │   │
-│  │  └─后处理: 结构化文本 → ES; 向量 → PGVector; 缩略图 → MinIO + CDN           │   │
+│  │  └─后处理: 结构化文本 → ES/OpenSearch; 向量 → Milvus; 缩略图 → MinIO + CDN  │   │
 │  │  性能: 100页PDF < 2分钟(电子原生); 扫描件含OCR < 5 分钟                      │   │
 │  └────────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                  │
 │  ┌─ 统一输出 ────────────────────────────────────────────────────────────────┐   │
-│  │  所有处理结果汇总到: Elasticsearch(全文检索) + PGVector(语义检索)            │   │
+│  │  所有处理结果汇总到: Elasticsearch/OpenSearch(全文检索) + Milvus(语义检索)  │   │
 │  │  + PostgreSQL(结构化元数据) + MinIO(文件+缩略图, CDN分发)                    │   │
 │  └────────────────────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────────────────┘
@@ -344,7 +431,7 @@
 │                      Hermes 公共基础设施 (Common Infrastructure)       │
 │  ┌──────────┬──────────┬──────────┬──────────┬──────────┬──────────┐ │
 │  │JWT/RBAC  │审计日志   │知识库引擎 │文档生成   │通知服务   │配置管理   │ │
-│  │三级角色   │不可篡改   │PGVector+ES│docx/xlsx │Elink/WS  │K8s CM/   │ │
+│  │三级角色   │不可篡改   │Search+Milvus│docx/xlsx│Elink/WS  │K8s CM/   │ │
 │  └──────────┴──────────┴──────────┴──────────┴──────────┴──────────┘ │
 │  ┌──────────┬──────────┬──────────┬──────────┬──────────┬──────────┐ │
 │  │多模态处理 │全文搜索   │数据分层   │消息队列   │CDN/缓存   │监控告警   │ │
@@ -407,9 +494,9 @@
 
 | 数据类型 | 来源 | 处理方式 | 预估量/案件 | 存储层 |
 |----------|------|----------|------------|--------|
-| 音频 (访谈录音) | 调查访谈 | Whisper ASR → 文本 → ES+PGVector | 30-120min (300-1200MB) | 热层(活跃)→温层(归档) |
+| 音频 (访谈录音) | 调查访谈 | Whisper ASR → 文本 → 全文索引 + Milvus | 30-120min (300-1200MB) | 热层(活跃)→温层(归档) |
 | 图像 (证据截图) | 交易记录/聊天截图 | PaddleOCR → 文本 + CLIP 分类 | 20-50 张 (50-200MB) | 热层→温层 |
-| 文档 (合同/协议) | 供应商合同/采购单 | unstructured.io 解析 → Chunk → Embedding → PGVector | 5-20 份 (10-100MB) | 热层→温层 |
+| 文档 (合同/协议) | 供应商合同/采购单 | unstructured.io 解析 → Chunk → Embedding → Milvus | 5-20 份 (10-100MB) | 热层→温层 |
 | 视频 (监控/拜访) | 现场取证/安防监控 | 关键帧 + OCR + 音频转录 | 1-3 段 (500MB-5GB) | 温层(代理视频热层) |
 
 ### 4.3 模块二：风险监控（主动风险扫描）⏳ 规划中
@@ -614,9 +701,10 @@
 |----------|------|--------|
 | **统一认证 (JWT + RBAC)** | 三级角色（集团/科沃斯/添可），行级数据过滤，所有 API 路由自动注入；Token 黑名单 Redis Cluster 全局同步 | 全部模块 |
 | **审计日志** | 全量操作记录（操作人、时间、IP、内容、结果），不可删除篡改；ES 索引保留 1 年可搜索，归档保留 10 年 | 全部模块 |
-| **知识库引擎 (RAG)** | PGVector 多分区向量检索 + Elasticsearch 全文混合检索，支持按 kb_type 独立索引 | 全部模块 |
+| **知识库引擎 (RAG)** | RAG Orchestrator 统一编排 Elasticsearch/OpenSearch 全文召回 + Milvus 向量召回 + metadata filter + rerank + 引用追溯 | 全部模块 |
 | **多模态处理服务** | 音频/图像/视频/文档 四管道异步处理，文本提取 + 结构化 + 索引 | 全部模块 |
-| **全文搜索 (Elasticsearch)** | 跨案件/文档/证据/聊天记录统一全文检索，IK 中文分词，聚合分析 | 全部模块 |
+| **全文搜索 (Search Adapter)** | 跨案件/文档/证据/聊天记录统一全文检索；生产默认 Elasticsearch 9.x，许可或开源策略限制时切换 OpenSearch | 全部模块 |
+| **向量检索 (Milvus)** | 知识库、证据、历史案例向量召回；集合按模块和租户隔离，PostgreSQL 仅保存知识元数据和索引版本 | 全部模块 |
 | **文档生成服务** | Python-docx + OpenPyXL 模板填充，支持 Word/Excel 批量导出，Celery 异步执行 | 全部模块 |
 | **通知服务** | Elink 消息通知 + WebSocket 实时推送 + 任务中心消息分发 | 全部模块 |
 | **配置管理** | Pydantic Settings，.env 环境注入 / K8s ConfigMap + Secret，支持 LLM/DB/Redis/MinIO/JWT 等全局配置 | 全部模块 |
@@ -631,8 +719,8 @@
 | 层次 | 技术选型 | 版本 | 选型理由 |
 |------|----------|------|----------|
 | **后端框架** | FastAPI (Python 3.11+) | ≥0.115 | 原生异步支持，OpenAPI 自动生成，生态成熟 |
-| **工作流引擎** | LangGraph | ≥0.2 | 原生 Checkpointer + interrupt 机制，专为 LLM Agent 工作流设计 |
-| **LLM 网关** | LangChain (LLM Adapter) | ≥0.3 | 统一 LLM 调用接口，支持 DeepSeek/通义千问热切换 |
+| **工作流引擎** | LangGraph | 当前稳定版 | 原生 durable checkpointer + interrupt/resume，作为唯一 Workflow Runtime |
+| **LLM 网关** | Model Gateway + Provider Adapter | — | 统一 DeepSeek、Qwen、私有模型 endpoint；支持路由、熔断、灰度、成本与质量评估 |
 | **Web 前端** | Vue 3 + TypeScript | 3.x | 组合式 API，Element Plus 企业级组件库 |
 | **构建工具** | Vite (前端) / uv (后端) | — | Vite 冷启动快；uv 为 Rust 实现的 Python 包管理器，比 pip 快 10-100x |
 | **状态管理** | Pinia | — | Vue 3 官方推荐，TypeScript 友好 |
@@ -646,15 +734,16 @@
 
 | 组件 | 选型 | 版本 | 用途 | 选型理由 |
 |------|------|------|------|----------|
-| **关系数据库** | PostgreSQL | 16 | 业务数据、用户权限、审计日志 | 成熟稳定，支持 JSONB、分区表 |
-| **向量扩展** | pgvector | 0.7+ | 知识库嵌入向量存储与相似度检索 | 支持 HNSW 索引；与业务数据共库，事务一致性 |
+| **关系数据库** | PostgreSQL | 18 当前稳定版；DBA/插件未就绪时退到 17/16 当前小版本 | 业务事实、审批、任务、Outbox/Inbox、审计日志 | 成熟稳定，支持 JSONB、分区表、RLS；作为业务事实库而非大规模 AI 检索主库 |
+| **轻量向量扩展** | pgvector | 0.7+ | 小规模模块知识库、开发/测试、局部相似检索 | 支持 HNSW/IVFFlat；生产 10TB 级知识检索不作为主引擎 |
+| **向量检索服务** | Milvus Distributed | 当前稳定版 | 知识库、证据、历史案例的大规模向量召回 | 与业务 OLTP 物理隔离，支持大规模向量集合、水平扩展和独立容量治理 |
 | **ORM** | SQLAlchemy 2.0 (async) | ≥2.0 | 数据库映射与查询 | asyncio 原生支持，与 FastAPI 深度集成 |
 | **数据库迁移** | Alembic | ≥1.14 | Schema 版本管理 | SQLAlchemy 官方迁移工具 |
-| **连接池** | PgBouncer | ≥1.22 | 数据库连接池 | P1 Profile 峰值 500 并发需要 pool_size=500 transaction 模式连接池 |
-| **缓存/会话** | Redis Cluster | 7 | Session、Checkpointer、限流计数、热点缓存 | 3 主 3 从集群，AOF+RDB 持久化，自动故障转移 |
+| **连接池** | PgBouncer | ≥1.22 | 数据库连接池 | 生产峰值 500 并发需要 pool_size=500 transaction 模式连接池 |
+| **缓存/会话** | Redis Cluster | 7 | Session、限流计数、热点缓存、checkpoint 热缓存 | 3 主 3 从集群；不作为关键 workflow state 唯一持久化 |
 | **对象存储 (温层)** | MinIO 集群 | RELEASE.2025+ | 附件/文档/音视频/缩略图 | S3 兼容 API，4 节点 EC 12+4，本地部署 |
 | **冷层归档** | NAS / 磁带库 | — | 历史案件归档 (> 2 年) | 低成本长期存储，法规要求保留 10 年 |
-| **全文搜索** | Elasticsearch | 8.x | 10TB 文档全文检索、审计日志搜索 | 分布式倒排索引，IK 中文分词，P95 < 200ms |
+| **全文搜索** | Elasticsearch 9.x / OpenSearch | 当前稳定版 | 10TB 文档全文检索、审计日志搜索、证据检索 | 通过 Search Adapter 隔离产品差异；许可或开源策略变化时可切换 |
 | **负载均衡** | Nginx + Keepalived | 1.26+ | 反向代理、SSL 终结、CDN 缓存、API 负载均衡 | least_conn 算法、sticky session、健康检查 |
 
 ### 5.3 消息队列与异步处理
@@ -665,14 +754,16 @@
 | **任务分发** | Celery | ≥5.4 | Worker 任务执行框架 | 成熟的任务队列（Kombu 连接 RabbitMQ），支持重试、优先级、任务链 |
 | **任务监控** | Flower | ≥2.0 | Celery 任务监控 Dashboard | 实时查看任务状态、成功率、队列深度 |
 
-> **架构变更说明**：从 Celery + Redis 直接架构升级为 **Celery + RabbitMQ**。原因：P1 Profile 的峰值 500 并发和长耗时异步任务需要消息确认、DLX、quorum queues、消息重放和可观测积压治理；Redis Cluster 仍用于缓存、会话和 Checkpointer。
+> **架构边界说明**：RabbitMQ 负责消息可靠投递，Celery 负责任务执行，LangGraph 负责工作流语义。Worker 完成任务后只写任务结果并发布事件，由 Workflow Runtime 消费事件恢复节点；Redis Cluster 仅用于缓存、会话、限流和 checkpoint 热缓存。
 
 ### 5.4 AI/ML 组件
 
 | 组件 | 选型 | 用途 | 选型理由 |
 |------|------|------|----------|
-| **主 LLM** | DeepSeek (deepseek-v4-pro) | 对话生成、推理、报告撰写 | 中文能力优秀，API 兼容 OpenAI 格式，推理成本低 |
-| **备用 LLM** | 通义千问 (Qwen) | LLM 降级备份 | 阿里云生态，中文理解力强 |
+| **模型网关** | Model Gateway + Model Registry | 模型路由、熔断、灰度、成本和质量治理 | 不在业务代码中硬编码模型版本，支持多 provider 策略 |
+| **主模型 Provider** | DeepSeek | 对话生成、推理、报告撰写 | 中文能力优秀，API 兼容 OpenAI 格式，推理成本低 |
+| **备用模型 Provider** | Qwen / 通义千问 | LLM 降级备份 | 阿里云生态，中文理解力强，OpenAI-compatible 接入 |
+| **私有模型 Provider** | 本地大模型 endpoint | 高敏场景、成本控制、容灾补充 | 通过 provider adapter 接入，接受统一评测和路由策略 |
 | **Embedding 模型** | text-embedding-3-large (1536d) | 知识库文档向量化 | OpenAI 兼容接口，中文语义捕获好 |
 | **语音转文字** | Whisper large-v3 (自部署) | 音频转文字、访谈记录转录 | 开源、多语言、GPU 加速、批量离线处理；Tool 模式解耦 |
 | **说话人分离** | pyannote.audio (自部署) | 音频说话人识别与分离 | 开源、可与 Whisper 集成，支持多人对话场景 |
@@ -687,9 +778,10 @@
 | 组件 | 选型 | 用途 |
 |------|------|------|
 | **LLM 追踪** | LangFuse | Agent 节点 Token 消耗、LLM 延迟 P50/P95/P99、Tool 成功率、KB 检索命中率、Prompt 版本追踪 |
-| **系统监控** | Prometheus + Grafana | API QPS/P95 延迟/错误率、PG 连接池、Redis 命中率、RabbitMQ 深度、Celery 统计、K8s Pod/GPU 资源、ES 查询延迟 |
+| **统一遥测标准** | OpenTelemetry | trace_id 贯穿 API、Workflow、Worker、LLM、RAG、Tool、外部系统 |
+| **系统监控** | Prometheus + Grafana | API QPS/P95 延迟/错误率、PG 连接池、Redis 命中率、RabbitMQ 深度、Celery 统计、K8s Pod/GPU 资源、搜索与向量库延迟 |
 | **业务日志** | structlog | 结构化 JSON 日志，traceId 链路追踪，敏感字段自动脱敏；ES 索引 1 年 |
-| **分布式追踪** | Jaeger (OpenTelemetry) | 跨服务调用链追踪、瓶颈分析、服务依赖图；采样策略：正常 10%，错误 100% |
+| **分布式追踪** | Jaeger / Tempo | OpenTelemetry trace backend，支持跨服务调用链追踪、瓶颈分析和服务依赖图 |
 | **业务仪表板** | Grafana Business Dashboard | 10K 注册用户活跃度、案件处理量/趋势、存储使用趋势 (热/温/冷)、多模态处理吞吐量 |
 
 ### 5.6 Python 依赖
@@ -701,12 +793,12 @@
 | 数据库 | sqlalchemy[asyncio], asyncpg, alembic, pgvector, psycopg2 (PgBouncer) | ≥2.0 |
 | 缓存/队列 | redis[hiredis], celery, flower | ≥5.2 |
 | 消息队列 | kombu (RabbitMQ client for Celery) | ≥5.4 |
-| 搜索 | elasticsearch[async] | ≥8.0 |
+| 搜索/向量 | elasticsearch[async] 或 opensearch-py, pymilvus | 当前稳定版 |
 | 数据验证 | pydantic, pydantic-settings | ≥2.10 |
 | 认证 | python-jose[cryptography], passlib[bcrypt] | ≥3.3 |
 | 文档生成 | python-docx, openpyxl | ≥1.1 |
 | HTTP | httpx | ≥0.28 |
-| 可观测性 | structlog, langfuse, opentelemetry-api, opentelemetry-sdk, opentelemetry-exporter-jaeger | ≥24.4 |
+| 可观测性 | structlog, langfuse, opentelemetry-api, opentelemetry-sdk, opentelemetry-instrumentation-fastapi, opentelemetry-instrumentation-celery, OTLP exporter | 当前稳定版 |
 | 文件存储 | minio | ≥7.2 |
 | 多模态 | openai-whisper, faster-whisper, paddleocr, paddlepaddle-gpu, opencv-python-headless, unstructured[pdf,docx,xlsx], pillow | — |
 
@@ -715,13 +807,14 @@
 | 组件 | 版本 | 部署模式 |
 |------|------|----------|
 | K8s | 1.30+ | 3 Master + 5 Worker + 2 GPU Worker |
-| PostgreSQL | 16 + pgvector 0.7+ | Patroni + Primary + 2 Read Replicas + PgBouncer |
+| PostgreSQL | 18 当前稳定版；DBA/插件未就绪时 17/16 当前小版本 | CloudNativePG 或 Patroni + Primary + 2 Read Replicas + PgBouncer |
 | Redis | 7 | 3 Master + 3 Slave Cluster |
 | MinIO | RELEASE.2025+ | 4 节点, EC 12+4, ~20TB 可用 |
-| Elasticsearch | 8.x | 3 节点, 1 副本, 5 分片 |
+| Elasticsearch / OpenSearch | Elasticsearch 9.x 或 OpenSearch 当前稳定版 | 3+ 节点, 1 副本, 分片按索引容量规划 |
+| Milvus | 当前稳定版 | Distributed + 独立对象存储/消息组件，集合按模块和租户隔离 |
 | RabbitMQ | 3.13+ | 3 节点 quorum queues 集群 |
 | Nginx | 1.26+ (alpine) | 2 节点 + Keepalived VIP |
-| Jaeger | 1.60+ | Production (ES 后端) |
+| Jaeger / Tempo | 当前稳定版 | OpenTelemetry trace backend |
 | Docker Registry | Harbor | 内网镜像仓库 (等保要求) |
 
 ---
@@ -758,7 +851,8 @@
 │  │                                                                              │   │
 │  │  ┌─────────── 通用工作节点 (3台, CPU密集型) ──────────────────────────────┐  │   │
 │  │  │  k8s-worker-01 (16C/32G/200GB SSD)                                     │  │   │
-│  │  │  ├── api-deployment (3-10 pods, FastAPI+LangGraph)                      │  │   │
+│  │  │  ├── api-deployment (3-10 pods, FastAPI ASGI)                           │  │   │
+│  │  │  ├── workflow-runtime (3-10 pods, LangGraph durable runtime)             │  │   │
 │  │  │  ├── celery-report-worker (2-4 pods)  ├── celery-sync-worker (1-3)     │  │   │
 │  │  │  ├── celery-a2a-worker (1-3 pods)     └── celery-kb-worker (1-3)       │  │   │
 │  │  │                                                                         │  │   │
@@ -785,14 +879,16 @@
 │                                                                                  │
 │  ┌─────────────────────── 数据存储区 ──────────────────────────────────────────┐   │
 │  │                                                                              │   │
-│  │  PostgreSQL 集群: Primary(8C/32G/2TB SSD) + 2 Read Replicas(8C/32G/2TB SSD) │   │
-│  │  + PgBouncer(2C/4G, pool_size=500) → 热层                                   │   │
+│  │  PostgreSQL 业务事实库: Primary(8C/32G/2TB SSD) + 2 Read Replicas(8C/32G)   │   │
+│  │  + PgBouncer(2C/4G, pool_size=500) → 案件/审批/审计/Outbox/Inbox/checkpoint  │   │
 │  │                                                                              │   │
-│  │  Redis 7 Cluster: 3 Master + 3 Slave → Session/Cache/Checkpoint/RateLimit    │   │
+│  │  Redis 7 Cluster: 3 Master + 3 Slave → Session/Cache/RateLimit/热点状态缓存  │   │
 │  │                                                                              │   │
 │  │  MinIO 4 节点集群: EC 12+4, 各 4TB HDD, ~20TB 可用 → 温层                    │   │
 │  │                                                                              │   │
-│  │  Elasticsearch 3 节点: 各 8C/32G/1TB SSD, 1 副本 5 分片 → 全文检索           │   │
+│  │  Elasticsearch 9.x / OpenSearch: 各 8C/32G/1TB SSD → 全文检索/Search Adapter│   │
+│  │                                                                              │   │
+│  │  Milvus Distributed: 向量召回，集合按模块/租户隔离 → 知识库与证据向量检索      │   │
 │  │                                                                              │   │
 │  │  RabbitMQ 3 节点: 各 4C/16G/200GB SSD, quorum queues → 消息总线            │   │
 │  │                                                                              │   │
@@ -802,7 +898,7 @@
 │  └──────────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                  │
 │  ┌─────────────────────── 外部依赖区 ──────────────────────────────────────────┐   │
-│  │  风控系统 │ OA(BPM) │ MDM │ DeepSeek API │ 通义千问 API │ 企查查 API       │   │
+│  │  风控系统 │ OA(BPM) │ MDM │ Model Gateway Providers │ 私有模型 endpoint │   │
 │  │  龟宝(A2A) │ 西塞罗(A2A) │ 波特(A2A)                                       │   │
 │  └──────────────────────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────────────────┘
@@ -813,6 +909,7 @@
 | K8s Deployment | 副本 (min/max) | CPU Req/Limit | Memory Req/Limit | GPU | HPA 策略 |
 |------|------|------|------|------|------|
 | **api** | 3/20 | 1/2 core | 2G/4G | — | CPU > 70% 或 P95 > 300ms |
+| **workflow-runtime** | 3/20 | 1/2 core | 2G/4G | — | 队列/事件积压、运行中 workflow 数、P95 恢复耗时 |
 | **celery-audio-worker** | 1/3 | 2/4 | 8G/16G | V100 x1 | 队列深度 > 10 |
 | **celery-image-worker** | 1/3 | 2/4 | 8G/16G | V100 x1 | 队列深度 > 20 |
 | **celery-video-worker** | 1/2 | 2/4 | 8G/16G | V100 x1 | 队列深度 > 5 |
@@ -847,7 +944,7 @@
   └── 风险监控 Worker: 7x24 最少 1 副本，工作日峰值 3 副本
 ```
 
-**K8s 运行治理基线（P1 Profile 必备）**：
+**K8s 运行治理基线（生产必备）**：
 
 | 治理项 | 要求 |
 |--------|------|
@@ -856,6 +953,7 @@
 | PDB/反亲和 | API、Worker、PgBouncer、RabbitMQ、Redis、ES、MinIO 均配置 PodDisruptionBudget；关键副本跨节点反亲和或 TopologySpread |
 | GPU 调度 | GPU 节点使用 taint/toleration 与 nodeSelector；仅 audio/image/video worker 可申请 GPU |
 | 存储 | StatefulSet 使用明确 StorageClass 与 PVC；PG/ES/Redis/RabbitMQ/MinIO 禁止使用 emptyDir 持久化 |
+| Stateful Operator | PostgreSQL 优先 CloudNativePG 或 DBA 标准 Patroni；全文检索使用 ECK/OpenSearch Operator；MinIO 使用 MinIO Operator；监控使用 Prometheus Operator |
 | 探针 | API/Worker 暴露 liveness/readiness/startup probe；依赖不可用时 readiness 失败、liveness 不盲目重启 |
 | 弹性指标 | API 使用 HPA（CPU/内存/延迟）；Worker 使用 KEDA 读取 RabbitMQ 队列深度；容量触发阈值见 §8.16 |
 | 维护窗口 | 节点 drain 前先确认 PDB、备份状态和队列积压；生产节点升级需灰度并保留回滚窗口 |
@@ -866,22 +964,22 @@
   网络分区 (VLAN):
   VLAN 10: DMZ/接入层    → Nginx x2 (仅开放 80/443)
   VLAN 20: 应用层        → K8s Worker x5 + GPU Worker x2 (不对外暴露端口)
-  VLAN 30: 数据层        → PostgreSQL/Redis/MinIO/ES/RabbitMQ/NAS
-  VLAN 40: 管理层        → K8s Master/Harbor/Prometheus/Grafana/Jaeger/堡垒机
+  VLAN 30: 数据层        → PostgreSQL/Redis/MinIO/ES或OpenSearch/Milvus/RabbitMQ/NAS
+  VLAN 40: 管理层        → K8s Master/Harbor/Prometheus/Grafana/Jaeger或Tempo/堡垒机
 
   防火墙规则:
   ├── DMZ → 应用层: 仅 TCP 8000 (API/Ingress 上游)
-  ├── 应用层 → 数据层: TCP 5432(PG), 6379(Redis), 9000(MinIO), 9200(ES), 5672(AMQP)
-  ├── 管理层 → 所有: SSH(堡垒机), Prometheus metrics, K8s API, RabbitMQ/MinIO/ES 管理端
+  ├── 应用层 → 数据层: TCP 5432(PG), 6379(Redis), 9000(MinIO), 9200(Search), 19530(Milvus), 5672(AMQP)
+  ├── 管理层 → 所有: SSH(堡垒机), Prometheus metrics, K8s API, RabbitMQ/MinIO/Search/Milvus 管理端
   ├── 外部 Webhook → DMZ: 仅 HTTPS 443，经签名校验与 IP 白名单后转发到 API
-  └── 出网白名单: DeepSeek API, 通义千问 API, 企查查 API, 外部Agent回调
+  └── 出网白名单: Model Gateway providers, 私有模型 endpoint, 企查查 API, 外部Agent回调
 ```
 
 ### 6.5 数据库集群配置
 
 ```
-  PostgreSQL 16 集群 (Patroni + Streaming Replication + PgBouncer):
-  Patroni 管理 Primary 自动选主与故障转移
+  PostgreSQL 业务事实库 (18 当前稳定版；DBA/插件未就绪时 17/16 当前小版本):
+  CloudNativePG 或 Patroni 管理 Primary 自动选主与故障转移
   Primary (8C/32G/2TB) → WAL Streaming → Replica-1 (8C/32G/2TB)
                                         → Replica-2 (8C/32G/2TB)
   PgBouncer:
@@ -891,13 +989,15 @@
   ├── cases:      按 created_at RANGE 分区 (年)
   ├── audit_logs: 按 created_at RANGE 分区 (月)
   ├── case_evidences: 按 case_id HASH 分区
-  └── kb_chunks:  按 kb_type LIST 分区 + 按年子分区
+  ├── workflow_checkpoints: 按 thread_id HASH 分区 + created_at RANGE 子分区
+  ├── event_outbox/event_inbox: 按 created_at RANGE 分区
+  └── knowledge_metadata: 按 kb_type LIST 分区，仅保存知识元数据、索引版本和对象引用
 
   索引策略:
   ├── B-tree: 高频查询字段 (case_id, user_id, status)
-  ├── GIN: JSONB 字段, 全文检索字段
-  ├── HNSW: pgvector 向量索引 (kb_chunks 表)
-  └── 部分索引: 仅活跃状态的案件索引
+  ├── GIN: JSONB 字段和少量本地全文降级字段
+  ├── 部分索引: 仅活跃状态的案件索引
+  └── 向量主索引不在业务库内，交由 Milvus Distributed 承载
 
   备份策略:
   ├── pgBackRest 全量/增量备份 → MinIO + NAS 双副本
@@ -918,10 +1018,11 @@
    └── Harbor 内网镜像仓库部署
 
 2. 基础设施部署 (K8s StatefulSet + Service)
-   ├── PostgreSQL 集群 (Patroni + Primary + 2 Replicas + PgBouncer + pgBackRest)
+   ├── PostgreSQL 集群 (CloudNativePG 或 Patroni + Primary + 2 Replicas + PgBouncer + pgBackRest)
    ├── Redis Cluster (3 Master + 3 Slave)
    ├── MinIO 集群 (4 节点, EC 12+4)
-   ├── Elasticsearch 集群 (3 节点)
+   ├── Elasticsearch 9.x 或 OpenSearch 集群 (Search Adapter)
+   ├── Milvus Distributed 向量检索集群
    ├── RabbitMQ 集群 (3 节点, quorum queues)
    └── Jaeger (+ ES 后端)
 
@@ -953,7 +1054,7 @@
 
 ### 6.7 环境变量与密钥管理 (External Secrets/Vault + ConfigMap)
 
-P1 Profile 生产环境使用 HashiCorp Vault 或 External Secrets Operator 同步敏感配置到 K8s Secret，K8s Secret 仅作为运行时挂载载体；etcd 必须开启加密，Secret 不进入 Git、镜像、Helm values 明文和 CI 日志。D0 本地/测试环境可使用 `.env` 或本地 Secret 文件，但测试密钥也不得提交到 Git；如保留测试数据，应加密备份、限制文件权限并定期轮换。
+生产环境使用 HashiCorp Vault 或 External Secrets Operator 同步敏感配置到 K8s Secret，K8s Secret 仅作为运行时挂载载体；etcd 必须开启加密，Secret 不进入 Git、镜像、Helm values 明文和 CI 日志。非生产本地/测试环境可使用 `.env` 或本地 Secret 文件，但测试密钥也不得提交到 Git；如保留测试数据，应加密备份、限制文件权限并定期轮换。
 
 ```yaml
 # === K8s Secret (由 External Secrets/Vault 同步，禁止手工提交明文) ===
@@ -980,17 +1081,17 @@ kind: ConfigMap
 metadata:
   name: hermes-config
 data:
-  LLM_API_BASE: "https://api.deepseek.com"
-  LLM_MODEL: "deepseek-v4-pro"
-  LLM_BACKUP_API_BASE: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  LLM_BACKUP_MODEL: "qwen3.7-plus"
+  MODEL_GATEWAY_URL: "http://model-gateway-svc:8080"
+  MODEL_ROUTING_POLICY: "risk-control-prod-v1"
+  MODEL_PROVIDER_REGISTRY: "deepseek,qwen,private-endpoint"
   EMBEDDING_API_BASE: "https://api.lingyaai.cn/v1"
   EMBEDDING_MODEL: "text-embedding-3-large"
   DB_HOST_WRITE: "pgbouncer-svc"
   DB_HOST_READ: "pgbouncer-read-svc"
   DB_PORT: "5432"
   REDIS_CLUSTER_NODES: "redis-0:6379,...,redis-5:6379"
-  ES_HOSTS: "es-svc:9200"
+  SEARCH_HOSTS: "search-svc:9200"
+  VECTOR_STORE_URI: "milvus-svc:19530"
   RABBITMQ_HOST: "rabbitmq-svc"
   JAEGER_HOST: "jaeger-collector-svc"
   HOT_DATA_RETENTION_DAYS: "90"
@@ -1003,7 +1104,7 @@ data:
 
 **身份与密钥治理基线**：
 
-| 项 | P1 K8s 生产 | D0 Docker Compose 本地/测试 |
+| 项 | 生产 K8s | 非生产 Docker Compose 本地/测试 |
 |----|-------------|-------------------|
 | 用户身份 | 企业 SSO/OIDC/AD 接入；关键操作（导出、机密下载、密钥轮换、管理员变更）启用 MFA | 可使用本地账号/JWT；管理员账号强密码；禁止使用生产账号密码 |
 | 服务身份 | K8s ServiceAccount 最小权限；mTLS 或受控 NetworkPolicy 限制服务间访问 | Docker 网络隔离；管理端口仅本机/堡垒机访问 |
@@ -1141,7 +1242,7 @@ data:
 | **专项审计 → 持续改善** | 审计问题清单 | 结构化问题条目 | 报告出具时 | DB写入 + 消息通知 | 少量(KB) |
 | **离任审计 → 持续改善** | 问题清单（个人+业务） | 结构化问题条目 | 报告出具时 | DB写入 + 消息通知 | 少量(KB) |
 | **离任审计 ← 行为风险** | 行为风险预警结果 | 预警数据 | 审计执行前 | API 查询 | 少量(KB) |
-| **全模块 ↔ 多模态处理层** | 文件上传 → 处理结果 | 音频/图像/视频/文档 | 文件上传时异步触发 | MinIO 事件 → RabbitMQ → Worker → ES+PGVector | 大量(MB-GB/文件) |
+| **全模块 ↔ 多模态处理层** | 文件上传 → 处理结果 | 音频/图像/视频/文档 | 文件上传时异步触发 | MinIO 事件 → RabbitMQ → Worker → Search Adapter + Milvus | 大量(MB-GB/文件) |
 
 > **传输方式升级说明**：模块间数据交互从"直接 API 调用 + 数据库写入"升级为"**RabbitMQ 消息驱动 + 数据库最终一致性**"。大文件传输（如制度库同步）通过 MinIO 预签名 URL 或消息队列元数据交换，避免大载荷阻塞消息总线。
 
@@ -1268,29 +1369,29 @@ API 层: POST /api/v1/cases (创建案件, 生成 task_id) → 返回 { task_id 
     ├── 附件上传 (并行): POST /api/v1/media/upload
     │   ├── MinIO 直接上传 (预签名 URL, 支持断点续传, 最大 500MB)
     │   ├── MinIO Bucket 事件 → RabbitMQ (@audio/@image/@video/@doc_queue)
-    │   ├── 多模态 Worker 异步处理 → 提取文本 → ES + PGVector 索引
+    │   ├── 多模态 Worker 异步处理 → 提取文本 → Search Adapter + Milvus 索引
     │   └── 处理完成 → WebSocket 推送 "{file_id} 处理完成"
     │
     ▼
 API 层: POST /api/v1/cases/{id}/workflow/start → 返回 { task_id: "wf-xxx" }
     │
     ▼
-Service 层: WorkflowService.start_workflow()
+Service 层: WorkflowService.start_workflow() 仅创建 workflow 命令与业务事实
     │
     ▼
-LangGraph: graph.ainvoke(state, config={"configurable": {"thread_id": ...}})
+Workflow Runtime: 读取命令 → graph.invoke/resume(state, config={"configurable": {"thread_id": ...}})
     │
     ├── [intake 节点]
-    │   ├── KB 检索 (PGVector + ES 混合检索) → 组织架构、制度法规
-    │   ├── ES 全文检索: 历史相似案件
-    │   ├── LLM 推理 (DeepSeek, llm_queue 优先级队列) → 初判 + 分流决策
-    │   ├── State 写入 → Checkpointer (Redis Cluster)
+    │   ├── KB 检索 (Search Adapter + Milvus + metadata filter + rerank) → 组织架构、制度法规
+    │   ├── Search Adapter 全文检索: 历史相似案件
+    │   ├── LLM 推理 (Model Gateway, llm_queue 优先级队列) → 结构化初判 + 分流建议
+    │   ├── State 写入 → PostgreSQL durable checkpointer + Redis 热缓存
     │   └── interrupt_before → 挂起等待人工守门 → WebSocket 推送
     │
     ├── [用户守门]
     │   ├── API: POST /api/v1/cases/{id}/approval/intake
     │   ├── 守门结果写入 audit_log (不可篡改) + ES 审计索引
-    │   └── API: POST /api/v1/cases/{id}/workflow/resume
+    │   └── Workflow Runtime resume：将人工修改后的内容作为下游节点输入
     │
     ├── [条件路由: route_after_intake]
     │   ├── 不处理 → close_case_not_handled → 风控同步 → END
@@ -1298,13 +1399,13 @@ LangGraph: graph.ainvoke(state, config={"configurable": {"thread_id": ...}})
     │   └── 继续调查 → investigation 节点 →
     │
     ├── [investigation → analysis → disposition]
-    │   ├── 每阶段: KB检索 → LLM推理 → State更新 → interrupt → 守门 → resume
-    │   ├── investigation: 调查方案生成 (→ report_queue, Celery异步)
+    │   ├── 每阶段: KB检索 → LLM推理 → 结构化 stage_output → interrupt → 守门 → resume
+    │   ├── investigation: 调查方案生成任务 (→ report_queue, Celery异步；完成事件恢复 workflow)
     │   ├── analysis: 多维数据分析 + 报告撰写
     │   │   ├── Tool: SQL数据分析 (sync_queue, Celery异步)
     │   │   ├── Tool: 语音转文字查询 (多模态结果, ES+PG)
-    │   │   ├── Tool: 全文检索证据 (Elasticsearch)
-    │   │   ├── Tool: 图像搜索相似证据 (PGVector 向量检索)
+    │   │   ├── Tool: 全文检索证据 (Elasticsearch/OpenSearch)
+    │   │   ├── Tool: 图像/证据相似检索 (Milvus 向量检索)
     │   │   └── Tool: 报告生成 (report_queue, MinIO存储, CDN分发)
     │   └── disposition: 追责分流
     │       └── 条件路由: 不追责 → END | 追责 → enforcement
@@ -1353,7 +1454,8 @@ LangGraph: graph.ainvoke(state, config={"configurable": {"thread_id": ...}})
 | **数据库分区** | 按年+客户分区 | cases(RANGE年), audit_logs(RANGE月), evidences(HASH case_id) |
 | **Redis** | 集群模式 | 3 主 3 从 Cluster，自动故障转移 + 分片 |
 | **MinIO** | 多节点集群 | 4 节点 EC 12+4，支持横向添加节点 |
-| **Elasticsearch** | 分布式集群 | 3 节点，5 分片 + 1 副本 |
+| **Elasticsearch/OpenSearch** | 分布式全文检索集群 | 3+ 节点，分片和副本按索引容量规划，通过 Search Adapter 访问 |
+| **Milvus** | 分布式向量检索集群 | 知识库、证据、历史案例向量召回，集合按模块和租户隔离 |
 | **RabbitMQ** | quorum queues 集群 | 3 节点，消息持久化，DLX 死信，支持 replay queue |
 | **模块扩展** | 新模块复用基础设施 | 8 模块基于共享底座，独立 K8s namespace |
 | **LLM 切换** | LLMAdapter 抽象层 + 优先级队列 | 新增 LLM 仅需 Adapter；按优先级调度 |
@@ -1370,7 +1472,7 @@ LangGraph: graph.ainvoke(state, config={"configurable": {"thread_id": ...}})
 | **100 页 PDF (扫描件)** | < 3min | PaddleOCR 批量并行 (4页/批)；电子原生 < 2min |
 | **10 分钟视频关键帧** | < 30s | FFmpeg 场景变化检测 (1fps) |
 | **LLM 单次调用** | 3-15s | llm_queue 优先级队列；超时 30s → 重试 → 降级备用 LLM |
-| **知识库检索 (混合)** | P95 < 200ms | PGVector HNSW + Elasticsearch；权重可配 |
+| **知识库检索 (混合)** | P95 < 200ms | Elasticsearch/OpenSearch 全文召回 + Milvus 向量召回 + metadata filter + rerank；权重可配 |
 | **并发** | 10K 注册/授权用户，峰值 500 并发 | PgBouncer pool_size=500；API HPA 3-20；LLM 令牌桶 50/s |
 | **大文件上传** | 最大 500MB (分片) | MinIO 预签名 URL；分片上传 (5MB/chunk) + 断点续传 |
 | **大文件下载** | 支持 > 100MB 流式 | HTTP Range；视频 HLS 自适应码率；PDF 分页流式 |
@@ -1382,23 +1484,23 @@ LangGraph: graph.ainvoke(state, config={"configurable": {"thread_id": ...}})
 
 | 场景 | 策略 | RTO | 降级行为 |
 |------|------|-----|----------|
-| **LLM 不可用** | 自动切换备用 LLM（通义千问）；两者均不可用 → human_intervention，任务保留队列 | 0s | 降级：案件进入人工接管模式 |
+| **LLM 不可用** | Model Gateway 自动熔断主 provider 并切换备用 provider；全部不可用 → human_intervention，任务保留队列 | 0s | 降级：案件进入人工接管模式 |
 | **DB 主库不可用** | Patroni 自动故障转移；Replica 提升为 Primary | < 30s | 降级：写操作暂停(队列缓冲) |
 | **DB 读副本不可用** | 读请求路由到 Primary 或其他 Replica | 0s | 降级：性能下降 (Primary 承载读写) |
-| **Redis 部分不可用** | Cluster 自动故障转移 | < 30s | 降级：Checkpointer 降级 MemorySaver |
+| **Redis 部分不可用** | Cluster 自动故障转移 | < 30s | 降级：缓存、会话和限流能力短暂受影响；workflow 以 PostgreSQL durable checkpoint 恢复 |
 | **ES 不可用** | 全文搜索降级到 PostgreSQL FTS | 0s | 降级：搜索变慢 (P95 可能 > 1s) |
 | **RabbitMQ 不可用** | quorum queue leader 自动转移；KEDA 暂停扩容并保留任务提交降级开关 | < 10s | 降级：新任务无法提交，已持久化任务继续恢复消费 |
 | **MinIO 部分节点** | EC 12+4 容忍 4 节点故障 | 0s | 降级：读取可用 (EC 恢复) |
 | **外部系统不可用** | Adapter 熔断器 (5 失败 → OPEN 60s → HALF_OPEN)；> 5min → P2 告警 | 0s | 降级：同步操作延后 |
 | **多模态管道不可用** | 文件正常上传，处理任务保留队列 | 0s | 降级：文件已上传待处理 |
-| **工作流中断** | Redis Checkpointer 持久化；thread_id 精确恢复 | < 10s | 无降级 |
+| **工作流中断** | PostgreSQL durable checkpointer 持久化；thread_id 精确恢复；Redis 仅作热缓存 | < 10s | 无降级 |
 | **节点故障** | K8s liveness probe 自动重启不健康 Pod | < 30s | Pod 迁移到健康节点 |
 
 ### 8.5 可观测性设计
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         可观测性四支柱                                 │
+│                OpenTelemetry 统一采集 + 可观测性四支柱                   │
 │                                                                      │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────┐ │
 │  │  Logs (日志)  │  │Metrics (指标)│  │Traces (追踪) │  │Business  │ │
@@ -1454,7 +1556,7 @@ LangGraph: graph.ainvoke(state, config={"configurable": {"thread_id": ...}})
 | **视频完整分析** | 10min 访谈视频 | < 3min | 关键帧+OCR+音频转录 (并行) | celery-video |
 | **视频代理生成** | 10min → 480p | < 2min | FFmpeg NVENC 硬件编码 + HLS切片 | celery-video |
 | **文档解析** | 50页 Word报告 | < 30s | unstructured.io + python-docx | celery-doc |
-| **文档分块+索引** | 100页 PDF | < 1min | Chunking + Embedding + ES + PGVector | celery-kb, CPU, 1-3 pods |
+| **文档分块+索引** | 100页 PDF | < 1min | Chunking + Embedding + Search Adapter + Milvus | celery-kb, CPU, 1-3 pods |
 
 **处理优先级**：证据材料（活跃案件相关）> 批量归档处理 > 历史数据回溯处理。优先队列实现于 RabbitMQ 消息优先级。
 
@@ -1462,7 +1564,7 @@ LangGraph: graph.ainvoke(state, config={"configurable": {"thread_id": ...}})
 
 | 阶段 | 触发条件 | 迁移动作 | 存储介质 | 访问 SLA |
 |------|----------|----------|----------|----------|
-| **热层 (Hot)** | 案件创建至关闭后 90 天 | — | PostgreSQL + pgvector | P95 < 50ms (索引) / < 200ms (复杂) |
+| **热层 (Hot)** | 案件创建至关闭后 90 天 | — | PostgreSQL 业务事实库 + Search/Milvus 检索域 + MinIO 对象热访问 | P95 < 50ms (索引) / < 200ms (复杂) |
 | **热→温** | 案件关闭后 90 天 | 案件完整数据打包 → MinIO；PG 中保留元数据指针和摘要；原始大文件从 PG 删除 | MinIO 对象存储 | P95 < 200ms (元数据) / < 1s (文件下载) |
 | **温→冷** | 案件关闭后 2 年 | 案件 + 证据 + 报告完整打包 → NAS/磁带；MinIO 中删除；ES 索引保留可搜索元数据；PG 仅保留案件号、归档路径、关键词 | NAS / 磁带 | 按需恢复：< 24h |
 | **冷保留** | 冷层已存储 | 保留 10 年（法规要求） | NAS / 磁带 | 按需恢复 |
@@ -1515,6 +1617,19 @@ LangGraph: graph.ainvoke(state, config={"configurable": {"thread_id": ...}})
 - E2E 测试：使用脱敏后的生产数据子集 (anonymized DB dump)
 - 多模态测试：预置标准样本库 (标准音频/扫描件/视频片段)
 - 性能测试：数据生成器模拟 10TB 规模写入负载
+
+**生产架构验收场景**：
+
+| 场景 | 验收要求 |
+|------|----------|
+| HITL 长暂停恢复 | 任意 HITL 节点暂停 24 小时后，workflow 能从 durable checkpoint 精确恢复。 |
+| 人工修改传递 | 人工修改阶段输出后，下游 Agent 使用修改后的内容，而不是原始 AI 输出。 |
+| Worker 幂等 | Worker 崩溃、Pod 重启、RabbitMQ 重投递时，不产生重复报告、重复处罚、重复外部推送。 |
+| 外部回调去重 | 外部系统重复回调时，Inbox 去重生效，业务状态只推进一次。 |
+| 模型熔断 | LLM 主 provider 不可用时，Model Gateway 熔断并切换备用 provider；双 provider 不可用时进入人工接管。 |
+| 检索降级 | Elasticsearch/OpenSearch 不可用时，案件主流程不丢状态；向量库不可用时，Agent 进入“知识不足/人工接管”而非编造结论。 |
+| 审计追溯 | 任意案件状态变化都能追踪操作者、AI 输出、知识来源、人工意见、trace_id 和时间戳。 |
+| 安全失败 | 租户越权查询、敏感字段明文泄漏、对象存储直链泄漏必须在安全测试中失败。 |
 
 ### 8.10 零停机数据库迁移策略
 
@@ -1581,7 +1696,7 @@ LangGraph: graph.ainvoke(state, config={"configurable": {"thread_id": ...}})
 | AES 加密密钥 | Vault/External Secrets → 独立 K8s Secret | 180 天 | 仅 api-pod + worker-pod |
 | TLS 证书 | cert-manager (自动签发+续期) | 90 天 (自动续期) | Ingress Controller |
 
-> 等保二级要求密钥与业务数据分离存储。P1 Profile 生产默认采用 Vault 或 External Secrets；D0 本地/测试可使用本地 Secret 文件，但必须限制权限，且不得复用生产密钥。
+> 等保二级要求密钥与业务数据分离存储。生产默认采用 Vault 或 External Secrets；非生产本地/测试可使用本地 Secret 文件，但必须限制权限，且不得复用生产密钥。
 
 ### 8.12 API 版本管理策略
 
@@ -1606,7 +1721,7 @@ LangGraph: graph.ainvoke(state, config={"configurable": {"thread_id": ...}})
 | **缓存** | Redis key 前缀隔离 | `ecovacs:cache:...` / `tineco:cache:...` / `group:cache:...` |
 | **审计** | 审计日志记录 client 上下文 | 每条日志标记 `client` 字段，支持按租户独立审计 |
 
-> 隔离原则：科沃斯用户不可查询添可数据，反之亦然。集团用户拥有全局视角但必须有显式全局权限。P1 Profile 使用应用层过滤 + PG RLS 双保险，禁止只依赖应用层拦截。
+> 隔离原则：科沃斯用户不可查询添可数据，反之亦然。集团用户拥有全局视角但必须有显式全局权限。生产使用应用层过滤 + PG RLS 双保险，禁止只依赖应用层拦截。
 
 ### 8.14 智能体记忆架构设计
 
@@ -1624,7 +1739,7 @@ LangGraph: graph.ainvoke(state, config={"configurable": {"thread_id": ...}})
 │  │  ├── 知识库 (RAG): 制度法规、历史案例、报告模板、风险规则      │ │
 │  │  ├── 反馈闭环: 处置结果回流 → 规则优化 → 知识更新             │ │
 │  │  └── 审计日志: 全量操作记录，支撑复盘与模式发现               │ │
-│  │  存储: PGVector + Elasticsearch + PostgreSQL                 │ │
+│  │  存储: Milvus + Elasticsearch/OpenSearch + PostgreSQL metadata│ │
 │  │  生命周期: 永久 (持续更新)                                    │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 │                              ↑ 固化                               │
@@ -1646,7 +1761,7 @@ LangGraph: graph.ainvoke(state, config={"configurable": {"thread_id": ...}})
 │  │  ├── 检索上下文 (本轮 RAG 召回的文档片段)                      │ │
 │  │  ├── Tool 调用结果缓存 (避免重复计算)                         │ │
 │  │  └── Context Window 管理 (摘要压缩 + 滑动窗口)                │ │
-│  │  存储: Redis (热) + LangGraph State (序列化)                  │ │
+│  │  存储: PostgreSQL durable checkpoint + Redis 热缓存            │ │
 │  │  生命周期: 单阶段 (守门完成后归档 → 压缩摘要保留)              │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 │                              ↑ 交互                               │
@@ -1690,8 +1805,8 @@ LangGraph: graph.ainvoke(state, config={"configurable": {"thread_id": ...}})
 
 | 记忆类型 | 检索方式 | 触发时机 | 技术实现 |
 |----------|----------|----------|----------|
-| **L4 组织记忆** | 向量语义检索 + 全文关键词 + 结构化过滤 | 每个工作流阶段启动时 | PGVector (cosine similarity) + ES (BM25) + SQL (元数据过滤)；混合检索 + Re-ranking |
-| **L3 案例记忆** | 结构化查询 + 相似案例检索 | 调查方案生成 / 案件定性 / 追责建议时 | SQL 查询历史案件 (同类型/同部门/同金额区间)；PGVector 相似案例召回 |
+| **L4 组织记忆** | 向量语义检索 + 全文关键词 + 结构化过滤 | 每个工作流阶段启动时 | Milvus 向量召回 + Search Adapter (BM25) + SQL 元数据过滤；混合检索 + Re-ranking |
+| **L3 案例记忆** | 结构化查询 + 相似案例检索 | 调查方案生成 / 案件定性 / 追责建议时 | SQL 查询历史案件 (同类型/同部门/同金额区间)；Milvus 相似案例召回 |
 | **L2 会话记忆** | LangGraph State 直接读取 | 单阶段内后续 LLM 调用 | `state["messages"]` 自动注入；超长对话自动摘要压缩 (LLM 生成 200 token 摘要) |
 | **L1 感知记忆** | 实时注入 | 每次 LLM 调用 | System Prompt 模板 + 阶段知识注入 + RAG 上下文组装 |
 
@@ -1820,19 +1935,19 @@ LangGraph: graph.ainvoke(state, config={"configurable": {"thread_id": ...}})
 | K8s Worker 节点 (CPU) | 5 | 16C/32G/200GB SSD | ¥15,000-25,000 | ¥75,000-125,000 |
 | K8s Worker 节点 (GPU V100) | 2 | 16C/64G/200GB SSD + V100 32G | ¥60,000-100,000 | ¥120,000-200,000 |
 | PostgreSQL 主机 | 3 | 8C/32G/2TB SSD | ¥25,000-40,000 | ¥75,000-120,000 |
-| Elasticsearch 主机 | 3 | 8C/32G/1TB SSD | ¥20,000-35,000 | ¥60,000-105,000 |
+| Elasticsearch/OpenSearch 主机 | 3 | 8C/32G/1TB SSD | ¥20,000-35,000 | ¥60,000-105,000 |
+| Milvus 向量检索节点 | 3 | 8C/32G/1TB SSD | ¥20,000-35,000 | ¥60,000-105,000 |
 | MinIO 存储节点 | 4 | 4TB HDD | ¥10,000-15,000 | ¥40,000-60,000 |
 | NAS 冷归档 | 1 | 50TB | ¥30,000-50,000 | ¥30,000-50,000 |
 | 网络设备 (交换机/防火墙) | — | — | ¥20,000-50,000 | ¥20,000-50,000 |
-| **硬件合计** | | | | **¥444,000-755,000** |
+| **硬件合计** | | | | **¥504,000-860,000** |
 
 **月度运营费用**：
 
 | 项目 | 月度估算 |
 |------|----------|
 | IDC 托管 (8-10U) | ¥5,000-15,000 |
-| DeepSeek API (日 50K-100K 次) | ¥20,000-50,000 |
-| 通义千问 API (备用) | ¥500-2,000 |
+| Model Gateway Provider 成本 (DeepSeek/Qwen/私有 endpoint) | ¥20,000-60,000 |
 | Embedding API | ¥3,000-8,000 |
 | SSL 证书 / 域名 | ¥0-500 |
 | **月度合计** | **¥28,500-75,500** |
@@ -1852,27 +1967,14 @@ LangGraph: graph.ainvoke(state, config={"configurable": {"thread_id": ...}})
 
 ---
 
-#### 8.18.2 D0 本地/测试方案成本（100 用户测试规模 / 5TB，Docker Compose）
-
-| 项目 | 一次性 | 月度 | 年度 |
-|------|--------|------|------|
-| 测试主机 (16C/64G/2TB SSD + 8TB HDD×2) | ¥17,900-32,800 | — | — |
-| 可选备份主机/备份磁盘 (8C/32G/1TB SSD + 8TB HDD×2) | ¥8,900-16,600 | — | — |
-| 测试机房/机柜托管 (可选) | — | ¥500-1,500 | ¥6,000-18,000 |
-| DeepSeek API | — | ¥2,000-5,000 | ¥24,000-60,000 |
-| Embedding API | — | ¥200-1,000 | ¥2,400-12,000 |
-| **合计** | **¥26,800-49,400** | **¥2,700-7,500** | **¥59,200-139,400** |
-
-> D0 仅用于本地开发、测试、PoC、演示和容量验证，不作为正式生产部署方案。预算可作为测试环境采购参考；正式生产 TCO 以 P1 K8s 高可用架构为准。详细部署方案见 `doc/deployment-plan-100users.md`。
-
-#### 8.18.3 降本建议
+#### 8.18.2 生产成本控制建议
 
 | 措施 | 节省 | 说明 |
 |------|------|------|
-| **本地部署 Embedding 模型** | ¥2,400-12,000/年 | 使用 `bge-large-zh-v1.5` 等开源中文模型替代 OpenAI Embedding API；CPU 即可推理，1024d，中文效果优秀 |
-| **本地部署 LLM (Qwen 72B 量化版)** | ¥24,000-60,000/年 | 长期来看自建推理更经济；需要 GPU（RTX 4090/ A4000）；初期可用 API，后期迁移 |
-| **合并冷备到 NAS** | ¥8,900-16,600 (一次性) | 如果已有企业内部 NAS，冷备可直接用 |
-| **共享 IDC 机柜** | ¥1,000-6,000/年 | 与其他系统共享机柜空间 |
+| **自托管 Embedding 模型** | API 成本下降 | 使用 `bge-large-zh-v1.5` 等中文模型，纳入 Model Gateway 和统一评测 |
+| **私有 LLM endpoint** | 长期推理成本下降 | 对高频、低敏或固定格式任务使用私有模型 endpoint，仍由 Model Gateway 路由 |
+| **检索冷热分层** | 搜索/向量存储成本下降 | 活跃知识集合使用高性能索引，归档知识集合降副本或冷存 |
+| **对象存储生命周期策略** | MinIO/NAS 成本下降 | 关闭案件大文件按生命周期转温/冷层，保留可搜索元数据 |
 | **使用 Let's Encrypt 免费 SSL** | ¥0 | 自动化续期，无需付费证书 |
 
 ---
@@ -1888,9 +1990,9 @@ RAG 系统的质量高度依赖知识库的丰富程度。一个空的知识库�
 - **法规引用不可靠**：没有制度法规注入，LLM 可能"幻觉"出不存在的规定
 - **用户体验差**：首次使用即遭遇低质量输出，用户信任难以建立
 
-#### 8.19.2 初始化阶段与数据源
+#### 8.19.2 上线准备步骤与数据源
 
-**Phase 0：上线前 2 个月 — 基础数据采集**
+**步骤 0：上线前 2 个月 — 基础数据采集**
 
 | 数据类型 | 来源 | 数量估算 | 优先级 | 负责人 |
 |----------|------|----------|--------|--------|
@@ -1905,7 +2007,7 @@ RAG 系统的质量高度依赖知识库的丰富程度。一个空的知识库�
 | 侵权案例库 | 法务部门/威科先行 | 50-100 份 | P2 可选 | 法务部门 |
 | 处罚公告历史 | OA 系统 | 50-100 份 | P2 可选 | HR 部门 |
 
-**Phase 1：上线前 1 个月 — 数据处理与入库**
+**步骤 1：上线前 1 个月 — 数据处理与入库**
 
 ```
 原始文件
@@ -1924,12 +2026,12 @@ RAG 系统的质量高度依赖知识库的丰富程度。一个空的知识库�
   │   └── 或 bge-large-zh-v1.5 → 1024d 向量（本地部署）
   │
   └── 索引
-      ├── PGVector: kb_type 分区索引 + HNSW
-      ├── Elasticsearch: 全文索引 + IK 分词
+      ├── Milvus: collection 按模块/租户隔离 + 向量索引
+      ├── Elasticsearch/OpenSearch: 全文索引 + 中文分词
       └── PostgreSQL: 结构化元数据（文档名/类型/日期/状态）
 ```
 
-**Phase 2：上线前 2 周 — 质量验证**
+**步骤 2：上线前 2 周 — 质量验证**
 
 | 验证项 | 方法 | 合格标准 |
 |--------|------|----------|
@@ -1977,23 +2079,21 @@ RAG 系统的质量高度依赖知识库的丰富程度。一个空的知识库�
 
 #### 8.20.2 场景化应急 SOP
 
-**SOP-01: LLM（DeepSeek）不可用**
+**SOP-01: LLM Provider 不可用**
 
 ```
-现象: LLM 调用持续返回 5xx 或超时（> 30s），持续 5 分钟以上
-影响: 所有 AI 功能不可用（初判/报告生成/智能分析）
+现象: 单个 LLM provider 持续返回 5xx 或超时（> 30s），持续 5 分钟以上
+影响: 该 provider 承载的 AI 功能延迟升高或失败
 
 处理步骤:
-1. [5min]  确认故障范围：检查 DeepSeek Status Page（status.deepseek.com）
-2. [2min]  执行切换：修改 LLM_API_BASE → 通义千问 API
-   export LLM_MODEL=qwen3.7-plus
-   curl -X POST localhost:8000/api/v1/admin/switch-llm -d '{"provider":"qwen"}'
-3. [5min]  验证：调用 /api/v1/health/llm 确认备用 LLM 可用
-4. [持续]  监控：关注 Qwen API 调用成功率和响应时间
-5. [恢复]  DeepSeek 恢复后，观察 30 分钟稳定，切回
+1. [5min]  确认故障范围：检查 Model Gateway provider health、错误率、超时率和外部状态页
+2. [自动]  Model Gateway 熔断故障 provider，将流量切到备用 provider 或私有 endpoint
+3. [5min]  验证：调用 /api/v1/health/llm 确认 routing policy 与备用 provider 可用
+4. [持续]  监控：关注备用 provider 成功率、P95 延迟、Token 成本和输出质量漂移
+5. [恢复]  故障 provider 恢复后，观察 30 分钟稳定，通过灰度路由逐步切回
 6. [事后]  复盘报告：故障时长、影响范围、改进措施
 
-降级行为: 用户操作不受影响（数据查看、守门审批等非 AI 功能正常）
+降级行为: 用户操作不受影响（数据查看、守门审批等非 AI 功能正常）；全部 provider 不可用时，workflow 进入 human_intervention
 恢复目标: < 5min（自动切换）/ < 15min（手动切换）
 ```
 
@@ -2022,14 +2122,14 @@ RAG 系统的质量高度依赖知识库的丰富程度。一个空的知识库�
 现象: PostgreSQL 无法启动或数据文件损坏，无法恢复
 影响: 所有读写操作不可用
 
-P1 K8s 生产处理步骤:
+生产 K8s 处理步骤:
 1. [5min]  确认 Patroni 状态、PgBouncer 路由和 replica 延迟，禁止直接执行破坏性 `pg_resetwal`
 2. [15min] 由 Patroni 提升健康 Replica 为 Primary，PgBouncer write pool 切换到新主库
 3. [15min] 验证：核心 API 健康检查 + 10 个冒烟测试 + 写入/读取一致性检查
 4. [2h]   如整个 PG 集群不可用，使用 pgBackRest + WAL 归档执行 PITR 恢复
 5. [事后] 修复旧主库，按新副本方式重新加入 Patroni 集群
 
-D0 Docker Compose 本地/测试处理步骤:
+非生产 Docker Compose 本地/测试处理步骤:
 1. [10min] 确认主库无法恢复后，停止写入并保留现场日志
 2. [30min] 如有备份主机，提升备份库或切换 DB_HOST；否则从最近定时备份恢复
 3. [30min] 验证核心 API 和登录/案件查询/写入
@@ -2037,7 +2137,7 @@ D0 Docker Compose 本地/测试处理步骤:
 恢复目标:
 - P1 主库故障: RPO < 5min / RTO < 15min
 - P1 数据库集群全故障: RPO < 1min / RTO < 2h
-- D0 本地/测试环境不承诺生产 RPO/RTO；每日备份场景下恢复演练参考值为 RPO < 24h / RTO < 2h
+- 非生产本地/测试环境不承诺生产 RPO/RTO；每日备份场景下恢复演练参考值为 RPO < 24h / RTO < 2h
 ```
 
 **SOP-04: Elasticsearch 不可用**
@@ -2053,7 +2153,7 @@ D0 Docker Compose 本地/测试处理步骤:
    docker compose restart elasticsearch
 3. [15min] 如无法恢复，启用降级：
    - 应用自动检测 ES 不可用 → 跳过全文检索
-   - 知识库检索降级为纯向量检索 (PGVector)
+   - 知识库检索降级为 Milvus 向量检索 + PostgreSQL 元数据过滤
    - 审计日志搜索降级为 PG 查询（速度慢但可用）
 4. [恢复]  ES 恢复后，重新启用全文检索
 5. [事后] 如频繁发生，升级为单节点集群（加副本）
@@ -2247,7 +2347,7 @@ deploy:dev:
 #### 8.22.3 LLM 版本升级流程
 
 ```
-DeepSeek 模型升级 (如 deepseek-v4-pro → deepseek-v5):
+Provider 模型升级（例如 DeepSeek 或 Qwen 的一个具体模型版本升级）:
 
 1. [评估阶段]
    ├── 准备 50 个标准测试 Prompt（覆盖 8 个模块的关键场景）
@@ -2255,22 +2355,24 @@ DeepSeek 模型升级 (如 deepseek-v4-pro → deepseek-v5):
    └── 关注：输出格式一致性、推理逻辑准确性、中文表达质量
 
 2. [灰度阶段]
-   ├── 10% 流量切换到新模型（按 task_id 哈希）
+   ├── Model Gateway 按 task_id 哈希将 10% 流量切换到新 provider/model_version
    ├── LangFuse/Prometheus 监控：成功率、延迟、Token 消耗
    └── 持续 3 天无异常 → 扩大灰度
 
 3. [全量切换]
-   └── 100% 切换到新模型，旧模型保留为备用
+   └── 100% 切换到新 provider/model_version，旧版本保留为可回滚路由
 
 回滚条件: 成功率 < 98% 或 P95 延迟 > 基线 2x 或人工评估质量下降
 ```
 
 #### 8.22.4 模型版本矩阵
 
-| 模型 | 当前版本 | 锁定策略 | 升级评估周期 |
-|------|----------|----------|-------------|
+| 模型/Provider | 当前版本 | 锁定策略 | 升级评估周期 |
+|---------------|----------|----------|-------------|
 | text-embedding-3-large | 1536d | API 固定版本号 | 每季度评估 |
-| DeepSeek | deepseek-v4-pro | API 固定版本号 | 每季度评估 |
+| DeepSeek provider | 由 Model Registry 记录具体 model_version | Provider + model_version + routing policy 固定 | 每季度评估 |
+| Qwen provider | 由 Model Registry 记录具体 model_version | Provider + model_version + routing policy 固定 | 每季度评估 |
+| 私有模型 endpoint | 由 Model Registry 记录镜像 digest 和权重版本 | 镜像 digest + 权重 checksum 固定 | 每季度评估 |
 | Whisper | large-v3 | Docker 镜像 Tag | 每半年评估 |
 | PaddleOCR | latest stable | Docker 镜像 Digest | 按需 |
 | CLIP | ViT-B/32 | 模型权重文件 MD5 | 按需 |
@@ -2296,8 +2398,7 @@ DeepSeek 模型升级 (如 deepseek-v4-pro → deepseek-v5):
 
 | 服务 | 调用场景 | 可用性要求 | 延迟要求 | 降级策略 |
 |------|----------|-----------|----------|----------|
-| **DeepSeek API** | 所有 LLM 推理（核心） | ≥ 99.5% | P95 < 15s | 自动切换通义千问 |
-| **通义千问 API** | LLM 备用 | ≥ 99.0% | P95 < 20s | 手动降级为 Static 回复 |
+| **Model Gateway providers** | 所有 LLM 推理（DeepSeek/Qwen/私有 endpoint） | 单 provider ≥ 99.0%；组合可用性 ≥ 99.5% | P95 < 15-20s | 自动熔断故障 provider，路由到备用 provider；全部不可用进入人工接管 |
 | **Embedding API** | 文档向量化 + 查询向量化 | ≥ 99.5% | P95 < 500ms | 本地缓存 Embedding 结果 (7 天 TTL) |
 | **风控系统** | 案件同步、状态回写 | ≥ 99.0% | P95 < 2s | Adapter 熔断器 + 本地队列缓冲 |
 | **OA 系统 (BPM)** | 处罚公告审批 | ≥ 99.0% | P95 < 5s | 审批延后，手动补推 |
@@ -2337,72 +2438,26 @@ DeepSeek 模型升级 (如 deepseek-v4-pro → deepseek-v5):
 
 | 监控项 | 指标 | 告警阈值 | 违约处理 |
 |--------|------|----------|----------|
-| DeepSeek API 可用率 | 30 天窗口 | < 99.5% | 联系商务降费/赔偿，加速本地 LLM 方案 |
+| Model Gateway provider 组合可用率 | 30 天窗口 | < 99.5% | 启动 provider SLA 复盘，调整路由权重，加速私有模型 endpoint 容灾 |
 | Embedding API 可用率 | 30 天窗口 | < 99.5% | 评估本地 Embedding 模型替代方案 |
 | 外部系统可用率 | 30 天窗口 | < 99.0% | 与 IT 部门协调改进；提级到基础设施层面 |
 
 ---
 
-### 8.24 本地/测试 Docker Compose 方案
+### 8.24 最终生产架构默认假设与边界
 
-> **适用场景**：本地开发、测试环境、PoC、演示和容量验证。该方案不作为正式生产部署方案；生产部署以 P1 K8s 高可用架构为准。如需更详细的部署指导，请参阅 `doc/deployment-plan-100users.md`。
+本文档只描述最终生产架构，不把本地、测试、PoC 或演示环境作为生产架构的替代方案。非生产部署可以在独立部署手册中说明，但不得降低本文档定义的生产运行契约。
 
-#### 8.24.1 与原架构的差异对照
-
-| 组件 | P1 生产架构 (10K 注册用户) | D0 本地/测试方案 (100 用户测试规模) | 原因 |
-|------|-------------------|---------------------|------|
-| Kubernetes | 3M + 5W + 2GPU 集群 | ❌ Docker Compose 单机 | 本地/测试无需容器编排 |
-| PostgreSQL | Primary + 2 Replicas + PgBouncer | 单实例 + 冷备流复制 | 读写分离对 100 人无意义 |
-| Redis | 3 主 3 从 Cluster | 单实例 + AOF | 单实例轻松满足缓存需求 |
-| Elasticsearch | 3 节点集群 | 单节点 + 每日快照 | 单节点可处理 5TB 检索 |
-| RabbitMQ | 3 节点 quorum queues | 单节点 + 消息持久化 | 消息量极小 |
-| MinIO | 4 节点 EC 12+4 | 单节点 + RAID1 | 数据通过 rsync 备份 |
-| Nginx | 2 节点 + Keepalived | 单节点 + Docker restart | Nginx 挂了 Docker 自重启 |
-| Jaeger | 分布式追踪 | ❌ structlog traceId | 3-5 个服务无需分布式追踪 |
-| LangFuse | LLM 可观测 | ❌ Prometheus + structlog | LLM 调用量小 (日 < 1000 次) |
-| Harbor | 内网镜像仓库 | ❌ Docker Hub / GHCR | 镜像量小 |
-| PgBouncer | 连接池 | ❌ PG 原生连接 | 连接数 < 30 |
-| GPU Worker | 2× V100 32G | ⏸️ 延期 (可后补 1× A4000) | 第一版仅 CPU 文档解析 |
-
-#### 8.24.2 硬件配置建议
-
-| 主机 | 配置 | 用途 |
-|------|------|------|
-| **测试主机** | 16 核 / 64GB / 2TB NVMe SSD + 8TB HDD×2 (RAID1) | 所有 Docker 服务 |
-| **备份主机** (可选) | 8 核 / 32GB / 1TB SSD + 8TB HDD×2 | PG 备份恢复演练 + MinIO rsync + 配置备份 |
-| **GPU 主机** (可选) | 16 核 / 32GB + RTX A4000 16GB | 多模态处理（后补） |
-
-#### 8.24.3 部署步骤摘要
-
-```bash
-# 1. 环境准备
-git clone <repo> /opt/hermes
-cd /opt/hermes/deploy
-cp .env.example .env   # 填入真实密钥
-
-# 2. 启动
-docker compose up -d
-
-# 3. 初始化
-docker compose run --rm api alembic upgrade head
-docker compose run --rm api python -m hermes.scripts.create_admin
-
-# 4. 验证
-curl http://localhost:8000/health
-```
-
-#### 8.24.4 何时升级到 P1 生产架构
-
-| 触发条件 | 说明 |
-|----------|------|
-| 用户量 > 500 | Docker Compose 单机性能不足，应评估 P1 |
-| 日活 > 100 | 需要考虑 API 多实例 + 负载均衡 |
-| 并发 > 30 | 数据库连接池可能成为瓶颈 |
-| 存储 > 10TB | 单机存储扩容成本超过集群 |
-| 需要生产 SLA 或可用性 ≥ 99.9% | 必须采用多节点冗余和生产变更/监控体系 |
-| 团队有专职 SRE | 有人力运维 K8s 集群 |
-
-完整架构参见本文档主体章节（§三 至 §六）及 `doc/deployment-plan-100users.md` 第十章的扩容路线图。
+| 边界项 | 默认假设 |
+|--------|----------|
+| 部署平台 | 默认部署在 Kubernetes；状态型组件通过成熟 Operator 或 DBA 标准方案治理。 |
+| 工作流权威 | LangGraph Workflow Runtime 是唯一流程推进中心，API、Agent、Worker 和外部系统不得直接跳转业务阶段。 |
+| 持久化权威 | PostgreSQL 保存业务事实、审计事实、Outbox/Inbox 和 durable checkpoint；Redis 不作为关键 workflow state 唯一来源。 |
+| 检索架构 | 全文检索、向量检索和业务数据库分属不同运行域，避免单一数据库承载 OLTP、审计、全文和向量全部负载。 |
+| AI 执行边界 | AI 不直接执行处罚、移交、扣款、外部系统写入等高风险动作；所有高风险动作必须经过 HITL 和审计。 |
+| 外部集成 | 所有外发事件走 Outbox，所有回调走 Inbox；必须验签、去重、记录 trace_id 和 audit_log。 |
+| 可观测性 | OpenTelemetry 作为统一遥测标准；Prometheus/Grafana、LangFuse、Jaeger/Tempo、结构化日志以同一 trace_id 串联。 |
+| 安全 | 生产密钥由 Vault/KMS + External Secrets Operator 注入；敏感字段列级加密，文件对象服务端加密，访问使用短期预签名 URL。 |
 
 ---
 
@@ -2412,7 +2467,8 @@ curl http://localhost:8000/health
 |------|------|--------|----------|
 | v1.0 | 2026-05 | — | 初始版本，基于总体需求文档 v1.1 和 technical-spec v1.0 编写，面向小团队原型 |
 | v2.0 | 2026-05 | — | 重大升级：生产级架构，支持 10K 注册用户/10TB 数据/多模态处理。新增异步优先架构、数据分层、水平扩展、多模态管道、K8s 部署、Elasticsearch/RabbitMQ/Jaeger 等组件 |
-| v2.2 | 2026-06 | — | 统一部署 Profile 口径：P1 K8s 高可用为正式生产方案，D0 Docker Compose 仅用于本地/测试/PoC；补齐 Patroni/pgBackRest、RabbitMQ quorum queues、网络边界、身份密钥治理、K8s 运行治理、供应链安全、AI 治理和消息契约 |
+| v2.3 | 2026-06 | — | 按最终生产项目口径重构架构边界：明确 LangGraph Workflow Runtime 为状态推进中心；PostgreSQL durable checkpoint；业务库与检索域拆分；Milvus 承载大规模向量检索；A2A 企业事件契约；OpenTelemetry 统一遥测；Model Gateway 多 provider 策略 |
+| v2.2 | 2026-06 | — | 补齐 Patroni/pgBackRest、RabbitMQ quorum queues、网络边界、身份密钥治理、K8s 运行治理、供应链安全、AI 治理和消息契约 |
 | v2.1 | 2026-06 | — | 补充生产环境缺失要素：新增成本估算 (§8.18)、知识库初始化策略 (§8.19)、应急预案 (§8.20)、开发与测试环境方案 (§8.21)、模型版本管理策略 (§8.22)、第三方服务 SLA 要求 (§8.23)、Docker Compose 测试方案 (§8.24)。新增参考文档 `doc/deployment-plan-100users.md` |
 
 ## 附录 B：v1.0 → v2.0 变更摘要
@@ -2425,12 +2481,14 @@ curl http://localhost:8000/health
 | 数据库 | PostgreSQL 单实例 | Patroni + Streaming Replication + PgBouncer + pgBackRest + WAL 归档 |
 | 缓存 | Redis 单实例 | Redis 3主3从 Cluster |
 | 存储 | MinIO 单节点 | MinIO 4节点 EC 12+4 + NAS冷归档 |
-| 搜索 | PostgreSQL FTS | Elasticsearch 3节点集群 |
+| 搜索 | PostgreSQL FTS | Elasticsearch/OpenSearch 全文检索 + Milvus Distributed 向量检索，均通过 Adapter 隔离 |
 | 多模态 | 无专门管道 | 4条独立处理管道 (音频/图像/视频/文档) + GPU加速 |
 | 数据生命周期 | 无 | 热温冷三层自动迁移 (90天/2年/10年) |
-| 可观测性 | 三层 (LangFuse+Prometheus+structlog) | 四层 (+Jaeger分布式追踪 + 业务仪表板) |
-| ADR | 4 项 | 10 项 |
-| 可用性 | 无明确目标 | P1 API 99.9%，DB 主库故障 RPO < 5min / RTO < 15min；D0 Docker Compose 不承诺生产 SLA，仅用于测试恢复演练 |
+| 可观测性 | 三层 (LangFuse+Prometheus+structlog) | OpenTelemetry 统一采集 + Prometheus/Grafana + LangFuse + Jaeger/Tempo + 业务仪表板 |
+| 工作流状态 | 无明确权威 | LangGraph Workflow Runtime + PostgreSQL durable checkpoint |
+| 模型接入 | 单一模型调用 | Model Gateway + Provider Adapter + Model Registry + Routing Policy |
+| ADR | 4 项 | 11 项 |
+| 可用性 | 无明确目标 | 生产 API 99.9%，DB 主库故障 RPO < 5min / RTO < 15min；非生产环境不承诺生产 SLA |
 
 ## 附录 C：参考文档
 
@@ -2446,7 +2504,7 @@ curl http://localhost:8000/health
 | 商业秘密需求 | `doc/科沃斯-赫尔墨斯AI需求文档-商业秘密.pdf` |
 | 行为风险需求 | `doc/科沃斯-赫尔墨斯AI需求文档-行为风险.pdf` |
 | 持续改善需求 | `doc/科沃斯-赫尔墨斯AI需求文档-持续改善.pdf` |
-| D0 本地/测试部署方案 (100用户测试规模) | `doc/deployment-plan-100users.md` |
+| 非生产本地/测试部署方案 | `doc/deployment-plan-100users.md` |
 | 数据设计文档 | `doc/data-design.md` |
 | API 设计文档 | `doc/api-design.md` |
 | 模块需求文档 | `doc/modules/` |

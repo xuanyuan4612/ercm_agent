@@ -11,6 +11,37 @@
 
 ## 一、模块 Agent 全景
 
+### 1.0 生产落地边界
+
+内控评价模块不设置自主决策型“模块主 Agent”。模块主控为 `internal-control-evaluation-graph`，负责 13 步骤流程推进、19 个业务循环的阶段编排、HITL、缺陷确认、评分汇总和报告归档。
+
+本模块使用 `internal-control-evaluation-agent-profile` 作为 AI 能力配置入口。本文档中的 `audit-plan-agent`、`audit-check-agent`、`interview-agent` 是跨模块共享 Stage Agent 的权威设计来源，但它们不拥有跨阶段状态跳转权；专项审计和离任审计复用这些 Agent 时，必须通过各自 Module Graph 和 Module Agent Profile 注入差异化参数。
+
+> 统一架构约束见 [00-agent-architecture.md](00-agent-architecture.md)。
+
+```yaml
+profile_id: internal-control-evaluation-agent-profile
+module: internal_control_evaluation
+module_graph: internal-control-evaluation-graph
+knowledge_scopes:
+  - kb_internal_control_policy
+  - kb_control_matrix
+  - kb_audit_plan
+  - kb_interview_template
+  - kb_deficiency_rating
+allowed_tools:
+  - rag_search
+  - control_matrix_read
+  - interview_plan_generate
+  - audit_workpaper_analyze
+  - score_calculate
+  - doc_generate
+quality_gates:
+  require_control_activity_mapping: true
+  require_deficiency_basis: true
+  require_human_review: true
+```
+
 ### 1.1 Agent 清单
 
 | Agent ID | 名称 | 角色身份 | 共享范围 | 复杂度 | 状态 |

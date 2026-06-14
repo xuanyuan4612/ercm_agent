@@ -10,6 +10,36 @@
 
 ## 一、模块 Agent 全景
 
+### 1.0 生产落地边界
+
+风险监控模块不设置自主决策型“模块主 Agent”。模块主控为 `risk-monitoring-graph`，负责规则入库、扫描调度、异常复核、定性确认、结果推送和处置回流。
+
+本模块使用 `risk-monitoring-agent-profile` 作为 AI 能力配置入口，统一定义风险规则知识库、只读数据工具、外部数据工具、模型路由和输出 schema。Agent 只生成规则建议、异常解释、风险定性建议和误报优化建议；规则入库、SQL 执行授权、下游推送和规则作废必须由 workflow 与人工守门共同控制。
+
+> 统一架构约束见 [00-agent-architecture.md](00-agent-architecture.md)。
+
+```yaml
+profile_id: risk-monitoring-agent-profile
+module: risk_monitoring
+module_graph: risk-monitoring-graph
+knowledge_scopes:
+  - kb_risk_rules
+  - kb_risk_cases
+  - kb_database_schema
+  - kb_disposition_feedback
+allowed_tools:
+  - rag_search
+  - sql_syntax_validate
+  - sql_test_execute_readonly
+  - risk_scan_submit
+  - external_data_query
+  - outbox_publish
+quality_gates:
+  require_sql_review: true
+  require_false_positive_feedback: true
+  require_human_review_for_push: true
+```
+
 ### 1.1 Agent 清单
 
 | Agent ID | 名称 | 角色身份 | 工作流阶段 | 复杂度 | 状态 |
@@ -182,7 +212,7 @@ class RiskRuleAgentOutput(BaseModel):
 5. 标注风险等级、阈值、监控频率
 
 【SQL规范】
-- 必须使用标准SQL语法，兼容PostgreSQL 16
+- 必须使用标准 SQL 语法，兼容生产 PostgreSQL 当前稳定版本（默认 18；如 DBA、云厂商或扩展支持受限，可退到 17/16 当前小版本）
 - 涉及金额比较时使用阈值参数（如 `> {threshold_amount}`），方便后续调整
 - 涉及时间范围时使用相对日期（如 `CURRENT_DATE - INTERVAL '30 days'`）
 - 每个SQL语句必须包含注释说明其监控目的和可能的误报场景
@@ -234,7 +264,7 @@ class RiskRuleAgentOutput(BaseModel):
 
 | 配置项 | 值 | 说明 |
 |--------|-----|------|
-| 主模型 | `deepseek-v4-pro` | — |
+| 模型入口 | Model Gateway | 使用风险监控模块路由策略选择 provider |
 | temperature | `0.4` | 中等温度，规则生成需要创造性但有逻辑约束 |
 | max_tokens | `8192` | 多条规则+SQL输出较大 |
 | 超时 | `45s` | 批量生成场景较长 |

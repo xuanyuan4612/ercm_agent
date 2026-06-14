@@ -11,6 +11,36 @@
 
 ## 一、模块 Agent 全景
 
+### 1.0 生产落地边界
+
+廉洁监察模块不设置自主决策型“模块主 Agent”。模块主控为 `integrity-supervision-graph`，负责 6 阶段流程推进、条件路由、HITL、外部事件触发、恢复和归档。
+
+本模块使用 `integrity-supervision-agent-profile` 作为 AI 能力配置入口，统一定义知识范围、工具权限、Prompt 包、模型路由和输出 schema。下列 Agent 均为 Stage Agent，只在对应阶段内生成结构化建议、证据引用和人工关注点，不直接修改案件终态，不绕过人工守门。
+
+> 统一架构约束见 [00-agent-architecture.md](00-agent-architecture.md)。
+
+```yaml
+profile_id: integrity-supervision-agent-profile
+module: integrity_supervision
+module_graph: integrity-supervision-graph
+knowledge_scopes:
+  - kb_integrity_policy
+  - kb_integrity_cases
+  - kb_law_and_regulation
+  - kb_disposition_template
+allowed_tools:
+  - rag_search
+  - evidence_search
+  - sql_analyze_readonly
+  - doc_generate
+  - a2a_send
+  - external_sync_outbox
+quality_gates:
+  require_citations: true
+  require_evidence_chain: true
+  require_human_review: true
+```
+
 ### 1.1 Agent 清单
 
 | Agent ID | 名称 | 角色身份 | 工作流阶段 | 复杂度 | 状态 |
@@ -130,9 +160,9 @@ intake-agent ──(案件上下文JSON)──→ investigation-agent
                                        ├──(调查方案)──→ analysis-agent
                                        │                   │
                                        │                   ├── SQL数据分析 (sync_queue)
-                                       │                   ├── 语音转文字查询 (ES+PGVector)
-                                       │                   ├── 全文检索证据 (ES)
-                                       │                   ├── 相似证据检索 (PGVector)
+                                       │                   ├── 语音转文字查询 (Search Adapter + Milvus)
+                                       │                   ├── 全文检索证据 (Elasticsearch/OpenSearch)
+                                       │                   ├── 相似证据检索 (Milvus)
                                        │                   └── 报告生成 (report_queue)
                                        │                   │
                                        ▼                   ▼
@@ -158,7 +188,7 @@ intake-agent ──(案件上下文JSON)──→ investigation-agent
 |-------|----------|----------|----------|-------------|
 | `intake-agent` | < 8s | < 15s | < 25s | KB检索 (2-3次) + LLM推理 (1-2次) |
 | `investigation-agent` | < 10s | < 20s | < 30s | KB检索 (3-4次，含历史案例相似度匹配) + LLM推理 (1次) |
-| `analysis-agent` | < 30s | < 60s | < 90s | 多工具调用 (SQL+ES+PGVector) + LLM推理 (2-3次) + 报告生成 |
+| `analysis-agent` | < 30s | < 60s | < 90s | 多工具调用 (SQL + Search Adapter + Milvus) + LLM推理 (2-3次) + 报告生成 |
 | `disposition-agent` | < 10s | < 20s | < 30s | KB检索 + LLM推理 + 可选报案书生成 |
 | `enforcement-agent` | < 15s | < 30s | < 45s | 文档生成 + 多路A2A通信 + 外部系统同步 |
 | **端到端工作流** | **< 5min** | **< 8min** | **< 12min** | 含碳基守门等待（~2-4min）+ Agent间数据传输 + 人工审核节点 |
@@ -167,7 +197,7 @@ intake-agent ──(案件上下文JSON)──→ investigation-agent
 
 | 瓶颈点 | 风险 | 缓解措施 |
 |--------|------|----------|
-| `analysis-agent` 多工具调用串行 | P95延迟可能超60s | SQL/ES/PGVector三路检索并行化；报告生成与LLM推理流水线化 |
+| `analysis-agent` 多工具调用串行 | P95延迟可能超60s | SQL、Search Adapter、Milvus 三路检索并行化；报告生成与 LLM 推理流水线化 |
 | `enforcement-agent` 多路A2A通信 | 任一外部Agent超时阻塞整体流程 | A2A通信异步化，发送即返回task_id，后续通过回调/轮询获取结果 |
 | KB检索串行调用>3次 | 累积延迟超5s | 同类型检索合并为批量调用；增加Redis缓存层(5min TTL) |
 | LLM推理排队 | 高并发时llm_queue深度过大 | 按案件优先级调度；intake-agent优先于enforcement-agent |
@@ -180,11 +210,11 @@ intake-agent ──(案件上下文JSON)──→ investigation-agent
 
 | KB分区 | 内容 | 使用Agent | 检索方式 |
 |--------|------|-----------|----------|
-| `kb_intake` | 公司组织架构、人员名单、岗位职责、客户/供应商清单、内部管理制度、外部法律法规 | intake-agent | 混合检索 (PGVector + ES) |
-| `kb_investigation` | 外部类似案件法条、公司各业务系统信息、过往舞弊案件及处理方案 | investigation-agent | 混合检索 (PGVector + ES) |
-| `kb_analysis` | 过往调查报告、报告模板及格式要求 | analysis-agent | PGVector 语义检索 |
-| `kb_disposition` | 公司制度文件、追责审批流程、组织架构及分权 | disposition-agent, enforcement-agent | 混合检索 (PGVector + ES) |
-| `kb_enforcement` | 黑名单管理制度、赔偿协议模板、处罚公告模板、人员架构 | enforcement-agent | 混合检索 (PGVector + ES) |
+| `kb_intake` | 公司组织架构、人员名单、岗位职责、客户/供应商清单、内部管理制度、外部法律法规 | intake-agent | 混合检索 (Milvus + Search Adapter) |
+| `kb_investigation` | 外部类似案件法条、公司各业务系统信息、过往舞弊案件及处理方案 | investigation-agent | 混合检索 (Milvus + Search Adapter) |
+| `kb_analysis` | 过往调查报告、报告模板及格式要求 | analysis-agent | Milvus 向量召回 + Search Adapter 全文召回 |
+| `kb_disposition` | 公司制度文件、追责审批流程、组织架构及分权 | disposition-agent, enforcement-agent | 混合检索 (Milvus + Search Adapter) |
+| `kb_enforcement` | 黑名单管理制度、赔偿协议模板、处罚公告模板、人员架构 | enforcement-agent | 混合检索 (Milvus + Search Adapter) |
 
 ### 3.2 共享工具
 
@@ -201,8 +231,8 @@ intake-agent ──(案件上下文JSON)──→ investigation-agent
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| 主模型 | `deepseek-v4-pro` | DeepSeek API |
-| 备用模型 | `qwen3.7-plus` | 通义千问 API |
+| 模型入口 | Model Gateway | 统一路由 DeepSeek、Qwen、私有模型 endpoint |
+| 路由策略 | `integrity-supervision-routing-policy` | 主备、熔断、灰度和敏感场景策略由 Model Registry 管理 |
 | Embedding模型 | `text-embedding-3-large` (1536d) | OpenAI 兼容接口 |
 | 默认超时 | 30s | 单次LLM调用超时（部分Agent按需覆盖：analysis-agent 45s、risk-rule-agent 45s、risk-analysis 子阶段1 60s） |
 | 默认重试 | 2次 | 指数退避 (2s, 4s) |
@@ -282,7 +312,7 @@ intake-agent ──(案件上下文JSON)──→ investigation-agent
 |------|----------|----------|
 | IDLE → KB_RETRIEVE | 接收到风控系统推送的案件数据（task_id + 字段 + 附件引用） | — |
 | KB_RETRIEVE → EVIDENCE_ANALYZE | KB检索返回结果（含空结果） | 检索超时 5s → ERROR |
-| KB_RETRIEVE → ERROR | PGVector/ES 连接失败或持续超时 | 见降级矩阵 |
+| KB_RETRIEVE → ERROR | Search Adapter/Milvus 连接失败或持续超时 | 见降级矩阵 |
 | EVIDENCE_ANALYZE → TRIAGE_DECIDE | 证据分析完成，关键事实提取成功 | LLM超时 30s → ERROR |
 | EVIDENCE_ANALYZE → LOW_CONF_WARNING | 关键字段缺失 > 30% 或 KB检索相似度 < 0.5 | — |
 | TRIAGE_DECIDE → PENDING_APPROVAL | 分流决策完成，初判报告生成 | — |
@@ -570,7 +600,7 @@ DeepSeek 上下文窗口 64K tokens，intake-agent 分配如下：
 {
     "tool_id": "kb_search_intake",
     "name": "知识库检索（初筛专用）",
-    "description": "在初筛阶段知识库分区中执行混合检索（PGVector语义 + ES全文），召回组织架构、制度法规、岗位职责等相关文档",
+    "description": "在初筛阶段知识库分区中执行混合检索（Milvus向量召回 + Elasticsearch/OpenSearch全文召回），召回组织架构、制度法规、岗位职责等相关文档",
     "parameters": {
         "type": "object",
         "properties": {
@@ -604,7 +634,7 @@ DeepSeek 上下文窗口 64K tokens，intake-agent 分配如下：
                 "title": {"type": "string"},
                 "content_snippet": {"type": "string"},
                 "score": {"type": "number"},
-                "source": {"type": "string", "enum": ["pgvector", "elasticsearch"]},
+                "source": {"type": "string", "enum": ["milvus", "search_adapter"]},
                 "kb_partition": {"type": "string"},
                 "metadata": {"type": "object"}
             }
@@ -762,8 +792,8 @@ DeepSeek 上下文窗口 64K tokens，intake-agent 分配如下：
 
 | 配置项 | 值 | 说明 |
 |--------|-----|------|
-| 主模型 | `deepseek-v4-pro` | DeepSeek API |
-| 备用模型 | `qwen3.7-plus` | 自动切换触发条件：主模型连续失败3次或超时2次 |
+| 模型入口 | Model Gateway | 由模型网关选择 DeepSeek、Qwen 或私有模型 endpoint |
+| 路由策略 | `integrity-supervision-routing-policy` | 主 provider 连续失败或超时后自动熔断并切换备用 provider |
 | temperature | `0.3` | 较低温度保证判断一致性（分流决策需要确定性而非创造性） |
 | max_tokens | `4096` | 输出含 JSON + 理由说明 + 法条引用，需要较大输出空间 |
 | top_p | `0.9` | — |
@@ -776,8 +806,8 @@ DeepSeek 上下文窗口 64K tokens，intake-agent 分配如下：
 
 | 故障场景 | 检测方式 | 降级行为 | 对上下游影响 |
 |----------|----------|----------|-------------|
-| **LLM (DeepSeek) 不可用** | 连续失败3次或超时2次 | 自动切换 `qwen3.7-plus`；若备用也失败 → 进入 human_intervention 节点，保留所有检索结果供人工参考 | 工作流暂停，等待人工决策 |
-| **KB检索为空** | 所有分区返回空或score < 0.3 | 标记置信度为 `low`，依赖LLM内部知识完成初判，但显式标注"未检索到相关制度文档，建议人工核实" | 初判报告质量降低，碳基需仔细审核 |
+| **LLM Provider 不可用** | Model Gateway 熔断或超时 | 自动切换备用 provider；若全部不可用 → 进入 human_intervention 节点，保留所有检索结果供人工参考 | 工作流暂停，等待人工决策 |
+| **KB检索为空** | 所有分区返回空或score < 0.3 | 标记置信度为 `low`，显式标注"未检索到相关制度文档，建议人工核实"，不得编造制度依据 | 初判报告质量降低，碳基需仔细审核 |
 | **ES历史案例检索失败** | 连接超时或返回5xx | 跳过历史案例比对，仅在初判报告中标注"历史案例检索暂不可用" | 初判缺少历史参考，但不阻塞流程 |
 | **语音转文字未完成** | file_id对应的转录结果在ES中不存在 | 标记"音频处理中，本次初判不含语音证据分析"，待音频处理完成后触发初判更新 | 初判可能不完整，碳基可选择等待或基于现有材料判断 |
 | **上游案件字段严重缺失** | 必填字段（fraud_event_detail）为空或 < 10字符 | 标记置信度为 `unable`，返回要求补充信息 | 不进入KB检索和LLM推理，直接进入 human_intervention |
@@ -802,7 +832,7 @@ DeepSeek 上下文窗口 64K tokens，intake-agent 分配如下：
 | **LLM返回包含幻觉** | 输出中的法条编号/案例编号在KB中不存在 | — | 标记为 `hallucination_detected: true`，碳基守门时强制展示警告标识 |
 | **JSON Schema校验失败** | 必填字段缺失或类型错误 | — | 自动重试 + 校验错误信息 → 3次失败后降级为自由文本输出 |
 | **敏感信息泄露** | 输出中包含未脱敏的真实姓名/手机号/身份证号 | — | 自动脱敏处理（正则替换）→ 记录 `pii_leak_attempt` 日志 → 触发P2告警 |
-| **知识库连接超时** | PGVector/ES连接超时(> 5s) | 使用LLM内部知识完成任务，但标记置信度为 `low` | 触发P2告警 |
+| **知识库连接超时** | Search Adapter 或 Milvus 连接超时(> 5s) | 标记知识不足和置信度 `low`，必要时进入人工接管，不得编造结论 | 触发P2告警 |
 | **并发冲突** | 同一task_id的重复请求 | 幂等键检测 → 返回已有结果，拒绝重复处理 | 记录 `duplicate_request` 日志 |
 
 ### 4.15 HITL 守门集成规范
@@ -871,7 +901,7 @@ DeepSeek 上下文窗口 64K tokens，intake-agent 分配如下：
 
   "confidence_badge": {
     "high": {"color": "green", "label": "✓ 建议采纳", "description": "依据充分，可直接确认"},
-    "medium": {"color": "orange", "label": "⚠ 需审核", "description": "有不��定因素，请仔细审核"},
+    "medium": {"color": "orange", "label": "⚠ 需审核", "description": "有不确定因素，请仔细审核"},
     "low": {"color": "red", "label": "⚠ 仅参考", "description": "信息不足，人工主导决策"},
     "unable": {"color": "gray", "label": "✗ 无法判断", "description": "超出能力范围，需人工决策"}
   },
@@ -1072,10 +1102,10 @@ DeepSeek 上下文窗口 64K tokens，intake-agent 分配如下：
 | LLM Token (输入) | System Prompt + KB上下文 + 案件信息 | ~10K tokens/次 | ~10M tokens/月 |
 | LLM Token (输出) | JSON + 理由说明 | ~2K tokens/次 | ~2M tokens/月 |
 | Embedding Token | 查询向量化 (5个query × 1536d) | ~1K tokens/次 | ~1M tokens/月 |
-| KB检索 | PGVector + ES 查询 | — | — |
+| KB检索 | Search Adapter + Milvus 查询 | — | — |
 | **单次总成本估算** | — | **~¥0.15** | **~¥150/月** |
 
-> 成本估算基于 DeepSeek API 定价（输入 ¥0.001/1K tokens，输出 ¥0.002/1K tokens）。实际成本受输入文本长度、检索次数等因素影响。
+> 成本估算由 Model Gateway 按 provider、模型版本、输入输出 token 和缓存命中率统一记录；实际成本受模型路由、输入文本长度和检索次数影响。
 
 ---
 
@@ -1300,8 +1330,8 @@ class InvestigationAgentOutput(BaseModel):
 
 | 配置项 | 值 | 说明 |
 |--------|-----|------|
-| 主模型 | `deepseek-v4-pro` | — |
-| 备用模型 | `qwen3.7-plus` | — |
+| 模型入口 | Model Gateway | 使用模块路由策略选择 provider |
+| 备用策略 | Model Registry fallback policy | 主 provider 熔断后切换备用 provider |
 | temperature | `0.5` | 中等温度，方案生成需要一定的创造性（不同案件策略不同） |
 | max_tokens | `4096` | 含调查方案结构 + 理由说明 |
 | 超时 | `30s` | — |
@@ -1311,7 +1341,7 @@ class InvestigationAgentOutput(BaseModel):
 
 | 故障场景 | 降级行为 |
 |----------|----------|
-| LLM不可用 | 自动切换备用LLM → 均不可用则进入 human_intervention |
+| LLM Provider 不可用 | Model Gateway 自动切换备用 provider → 均不可用则进入 human_intervention |
 | KB检索为空 | 基于LLM内部知识生成通用调查方案，标记置信度为 `low`，标注"知识库不可用，方案需人工补充" |
 | ES历史案例检索失败 | 跳过历史案例参考，仅基于KB和LLM知识生成方案 |
 | personnel_match失败 | 跳过人员匹配，在方案中标注"需人工确定访谈人员" |
@@ -1454,7 +1484,7 @@ class InvestigationAgentOutput(BaseModel):
   子状态 (DATA_GATHER):
   ┌─────────────────────────────────────────────────────────────────┐
   │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────┐ │
-  │  │ SQL_DB_QUERY│  │ ES_EVIDENCE │  │ PGVector    │  │ AUDIO   │ │
+  │  │ SQL_DB_QUERY│  │ SEARCH      │  │ Milvus      │  │ AUDIO   │ │
   │  │ 数据中台查询 │  │ 全文检索证据  │  │ _SIMILAR   │  │ _ANALYSIS│ │
   │  │             │  │             │  │ 相似证据检索  │  │ 音频分析  │ │
   │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────┘ │
@@ -1611,7 +1641,7 @@ class AnalysisAgentOutput(BaseModel):
 |--------|------|------|------|------|----------|
 | `sql_data_query` | SQL数据分析 | 执行业务数据SQL查询，获取结构化分析结果 | 15s | 1 | 异步 (sync_queue) |
 | `es_evidence_search` | 证据全文检索 | 在Elasticsearch中跨证据文件全文检索关键词 | 5s | 1 | 同步 |
-| `pgvector_similar_evidence` | 相似证据检索 | 基于向量相似度检索与已有证据相似的历史案件证据 | 5s | 1 | 同步 |
+| `milvus_similar_evidence` | 相似证据检索 | 基于向量相似度检索与已有证据相似的历史案件证据 | 5s | 1 | 同步 |
 | `audio_transcription_query` | 语音转文字查询 | 查询访谈/走访录音的转录结果 | 5s | 1 | 同步 |
 | `kb_search_analysis` | 知识库检索（分析专用） | 检索历史调查报告、报告模板 | 5s | 1 | 同步 |
 | `report_generate` | 报告生成 | 按标准模板生成廉洁监察报告 Word/PDF | 30s | 2 | 异步 (report_queue) |
@@ -1625,7 +1655,7 @@ class AnalysisAgentOutput(BaseModel):
            ├── 阶段1: 并行数据收集（4路）
            │   ├── sql_data_query（异步，提交任务 → 等待回调）
            │   ├── es_evidence_search（全文检索关键证据）
-           │   ├── pgvector_similar_evidence（相似证据检索）
+           │   ├── milvus_similar_evidence（相似证据检索）
            │   └── audio_transcription_query（语音转文字查询）
            │
            ├── 阶段1b: 访谈提纲生成（委托 interview-agent）
@@ -1655,7 +1685,7 @@ class AnalysisAgentOutput(BaseModel):
 |------|----------|-------------|
 | `sql_data_query` | 返回结果集非空且格式正确 | 返回空 → 标记"该数据源无异常数据"（可能是正常情况）；格式错误 → 重试1次 |
 | `es_evidence_search` | 返回结果 ≥ 1条 | 返回空 → 标记"全文检索未找到匹配证据"，仅依赖向量检索和已有数据 |
-| `pgvector_similar_evidence` | 返回结果 similarity ≥ 0.7 的 ≥ 1条 | similarity < 0.7 → 标记"无高度相似历史证据可参考" |
+| `milvus_similar_evidence` | 返回结果 similarity ≥ 0.7 的 ≥ 1条 | similarity < 0.7 → 标记"无高度相似历史证据可参考" |
 | `evidence_chain_validate` | 返回 contradictions 为空 | 存在矛盾 → 在报告结论中标注"证据链存在以下矛盾: ..."，置信度降为 medium |
 | `report_generate` | 异步任务提交成功 | 提交失败 → 仅输出JSON结论，标记"报告生成失败" |
 
@@ -1663,7 +1693,7 @@ class AnalysisAgentOutput(BaseModel):
 
 | 配置项 | 值 | 说明 |
 |--------|-----|------|
-| 主模型 | `deepseek-v4-pro` | — |
+| 模型入口 | Model Gateway | 使用模块路由策略选择 provider |
 | temperature | `0.2` | 低温度，分析结论需要高度一致性 |
 | max_tokens | `8192` | 报告输出较长，需较大输出空间 |
 | 超时 | `45s` | 最长超时（分析链路最长） |
@@ -1675,8 +1705,8 @@ class AnalysisAgentOutput(BaseModel):
 | 故障场景 | 降级行为 |
 |----------|----------|
 | SQL数据查询超时 | 跳过SQL分析，仅基于已有数据（访谈+走访+证据）分析，标注"数据库查询暂不可用" |
-| ES证据索引不可用 | 跳过全文检索，仅使用PGVector和已有数据，标注"全文检索暂不可用" |
-| PGVector相似证据不可用 | 跳过相似证据比对，仅基于本案证据分析 |
+| Search Adapter 证据索引不可用 | 跳过全文检索，仅使用 Milvus 和已有数据，标注"全文检索暂不可用" |
+| Milvus 相似证据不可用 | 跳过相似证据比对，仅基于本案证据分析 |
 | 语音转文字查询失败 | 标记"部分音频未处理完成"，在报告中标注待补充 |
 | report_generate异步失败 | 仅输出JSON结论，碳基可手动下载JSON后自行排版 |
 | 证据链校验发现矛盾 | 不阻塞流程，在结论中显式标注矛盾点供碳基判断 |
@@ -1985,7 +2015,7 @@ class DispositionAgentOutput(BaseModel):
 
 | 配置项 | 值 | 说明 |
 |--------|-----|------|
-| 主模型 | `deepseek-v4-pro` | — |
+| 模型入口 | Model Gateway | 使用模块路由策略选择 provider |
 | temperature | `0.1` | 最低温度 — 法律判断必须高度确定，不能有创意性 |
 | max_tokens | `4096` | — |
 | 超时 | `30s` | — |
@@ -2248,7 +2278,7 @@ class EnforcementAgentOutput(BaseModel):
 
 | 配置项 | 值 | 说明 |
 |--------|-----|------|
-| 主模型 | `deepseek-v4-pro` | — |
+| 模型入口 | Model Gateway | 使用模块路由策略选择 provider |
 | temperature | `0.3` | 较低温度，文书生成需要规范性 |
 | max_tokens | `4096` | 公告+协议内容较长 |
 | 超时 | `30s` | — |
@@ -2500,8 +2530,8 @@ readinessProbe:
   "status": "alive",
   "agent_id": "intake-agent",
   "uptime_seconds": 3600,
-  "llm_connected": true,         # LLM API可达
-  "kb_connected": true,           # PGVector可达
+  "llm_connected": true,         # Model Gateway可达
+  "kb_connected": true,           # Search Adapter/Milvus可达
   "redis_connected": true         # Redis Cluster可达
 }
 
@@ -2578,10 +2608,10 @@ graph.add_conditional_edges(
 | 阶段 | 动作 | 耗时 | 说明 |
 |------|------|------|------|
 | **容器启动** | 加载Python模块 + Pydantic模型 | ~2s | — |
-| **KB预热** | 建立PGVector连接池 + ES连接池 + 执行探针查询 | ~3s | 验证索引可用 |
-| **LLM预热** | 发送最小化推理请求（"PING" → "PONG"）| ~1s | 验证API Key有效 |
+| **KB预热** | 建立 Search Adapter + Milvus 客户端连接 + 执行探针查询 | ~3s | 验证索引可用 |
+| **LLM预热** | 通过 Model Gateway 发送最小化推理请求（"PING" → "PONG"）| ~1s | 验证 provider 路由可用 |
 | **Prompt加载** | 从YAML文件或ConfigMap加载当前版本Prompt模板 | <0.5s | — |
-| **Redis预热** | 连接Redis Cluster + 验证Checkpointer可用 | ~1s | — |
+| **Redis预热** | 连接 Redis Cluster + 验证热缓存可用 | ~1s | — |
 | **总计** | — | **~8s** | 在readinessProbe initialDelaySeconds=10s内完成 |
 
 ### D.5 Agent 间超时传播机制
@@ -2776,7 +2806,7 @@ class KBQualityMetrics:
 |--------|------|----------|------|
 | `ERR_AGENT_LLM_TIMEOUT` | LLM推理超时 | 超时>30s | 重试→备用LLM→human_intervention |
 | `ERR_AGENT_LLM_UNAVAILABLE` | LLM不可用 | 连续5xx或连接失败 | 切换备用→human_intervention |
-| `ERR_AGENT_KB_TIMEOUT` | 知识库检索超时 | PGVector/ES超时>5s | 标记low confidence→继续 |
+| `ERR_AGENT_KB_TIMEOUT` | 知识库检索超时 | Search Adapter/Milvus超时>5s | 标记知识不足与 low confidence，必要时进入人工接管 |
 | `ERR_AGENT_KB_EMPTY` | 知识库返回空 | 所有分区无结果 | 降级推理 |
 | `ERR_AGENT_TOOL_FAILED` | 工具调用失败 | 工具返回异常 | 降级矩阵对应处理 |
 | `ERR_AGENT_JSON_INVALID` | JSON输出格式错误 | Schema校验失败 | 重试→降级自由文本 |
