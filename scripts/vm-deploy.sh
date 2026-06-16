@@ -38,17 +38,17 @@ fi
 cd "$DEPLOY_DIR" || { log "[ERROR] 无法进入 $DEPLOY_DIR"; exit 1; }
 
 # ==================== 1. 拉取最新代码 ====================
-log "git pull 拉取最新代码..."
+log "git fetch 检测代码更新..."
 git fetch "$GIT_REMOTE" "$GIT_BRANCH"
 CURRENT=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse "$GIT_REMOTE/$GIT_BRANCH")
 
 if [ "$CURRENT" != "$REMOTE" ]; then
     git pull "$GIT_REMOTE" "$GIT_BRANCH"
-    log "代码已更新: ${CURRENT:0:7} → ${REMOTE:0:7}"
+    log "✅ 代码已更新: ${CURRENT:0:7} → ${REMOTE:0:7}"
     CODE_UPDATED=true
 else
-    log "代码已是最新 (${CURRENT:0:7})"
+    log "代码无变化 (HEAD: ${CURRENT:0:7})"
     CODE_UPDATED=false
 fi
 
@@ -67,12 +67,30 @@ fi
 # ==================== 3. 拉取镜像 ====================
 log "检查镜像更新..."
 OLD_DIGEST=$(docker inspect "$IMAGE_FULL" --format '{{index .RepoDigests 0}}' 2>/dev/null || echo "")
-docker compose -f "$COMPOSE_FILE" pull api 2>/dev/null
+docker compose -f "$COMPOSE_FILE" pull api 2>&1 | tail -1
 NEW_DIGEST=$(docker inspect "$IMAGE_FULL" --format '{{index .RepoDigests 0}}' 2>/dev/null || echo "")
 
-if [ "$OLD_DIGEST" == "$NEW_DIGEST" ] && [ -n "$OLD_DIGEST" ] && [ "$CODE_UPDATED" != "true" ]; then
-    log "镜像和代码均无变化，跳过部署"
+IMAGE_CHANGED=false
+if [ "$OLD_DIGEST" != "$NEW_DIGEST" ]; then
+    log "✅ 镜像已更新"
+    IMAGE_CHANGED=true
+elif [ -z "$OLD_DIGEST" ]; then
+    log "首次部署（无本地镜像缓存）"
+    IMAGE_CHANGED=true
+else
+    log "镜像无变化"
+fi
+
+# 代码和镜像都没变 → 跳过
+if [ "$CODE_UPDATED" != "true" ] && [ "$IMAGE_CHANGED" != "true" ]; then
+    log "跳过部署（代码和镜像均无变化）"
     exit 0
+fi
+
+# 代码变了但镜像没变 → GitHub Actions 可能还在构建
+if [ "$CODE_UPDATED" == "true" ] && [ "$IMAGE_CHANGED" != "true" ]; then
+    log "[WARN] 代码已更新但 ACR 镜像尚未刷新，请等待 GitHub Actions 构建完成"
+    log "       查看进度: https://github.com/xuanyuan111/ercm-agent/actions"
 fi
 
 # ==================== 4. 重启服务 ====================
@@ -92,7 +110,7 @@ fi
 
 # ==================== 6. 健康检查 ====================
 log "健康检查..."
-for i in $(seq 1 $MAX_HEALTH_RETRIES); do
+for _i in $(seq 1 $MAX_HEALTH_RETRIES); do
     if curl -sf "$HEALTH_URL" >/dev/null 2>&1; then
         log "部署完成 ✅  $HEALTH_URL 通过"
         exit 0
