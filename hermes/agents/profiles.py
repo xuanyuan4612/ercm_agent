@@ -16,11 +16,10 @@ Profile 不是主 Agent，不拥有状态跳转权。
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
 
 
-class ModelRoutingPolicy(str, Enum):
+class ModelRoutingPolicy(StrEnum):
     """模型路由策略"""
     PRIMARY_ONLY = "primary_only"
     PRIMARY_WITH_FALLBACK = "primary_with_fallback"
@@ -339,6 +338,6 @@ MODULE_PROFILES: dict[str, ModuleAgentProfile] = {
 }
 
 
-def get_profile(module: str) -> Optional[ModuleAgentProfile]:
+def get_profile(module: str) -> ModuleAgentProfile | None:
     """获取模块 Agent Profile"""
     return MODULE_PROFILES.get(module)

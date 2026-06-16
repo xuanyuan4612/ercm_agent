@@ -73,10 +73,14 @@ include = ["hermes*"]
 
 [tool.ruff]
 target-version = "py311"
-line-length = 120
+line-length = 130
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+# B008: FastAPI 标准写法，Depends/Query/Header 在参数默认值中是必要的
+# E402: 某些模块需要延迟导入或先创建对象再导入
+# E712: SQLAlchemy 的 `column == False` 是生成 SQL 表达式，不能用 `not column` 代替
+ignore = ["B008", "E402", "E712"]
 
 [tool.mypy]
 python_version = "3.11"

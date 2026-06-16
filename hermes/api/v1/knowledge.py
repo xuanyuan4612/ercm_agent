@@ -10,8 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from hermes.api.dependencies import CurrentUser, GroupRoleRequired
 from hermes.core.exceptions import KnowledgeBaseNotFoundError, NotFoundError
-from hermes.core.response import paginated, success
 from hermes.core.logging import get_logger
+from hermes.core.response import paginated, success
 from hermes.db.models.knowledge import KnowledgeDocument
 from hermes.db.session import get_db
 
@@ -38,7 +38,7 @@ async def list_knowledge_bases(
             KnowledgeDocument.kb_type,
             func.count(KnowledgeDocument.id).label("doc_count"),
         )
-        .where(KnowledgeDocument.is_active == True)
+        .where(KnowledgeDocument.is_active)
         .group_by(KnowledgeDocument.kb_type)
     )
     rows = result.all()
@@ -91,7 +91,7 @@ async def list_documents(
     if is_active is not None:
         query = query.where(KnowledgeDocument.is_active == is_active)
     else:
-        query = query.where(KnowledgeDocument.is_active == True)
+        query = query.where(KnowledgeDocument.is_active)
     if keyword:
         query = query.where(KnowledgeDocument.title.ilike(f"%{keyword}%"))
 
@@ -172,7 +172,7 @@ async def search_knowledge(
         select(KnowledgeDocument)
         .where(
             KnowledgeDocument.kb_type.in_(allowed),
-            KnowledgeDocument.is_active == True,
+            KnowledgeDocument.is_active,
             KnowledgeDocument.content.ilike(f"%{query}%"),
         )
         .order_by(KnowledgeDocument.updated_at.desc())

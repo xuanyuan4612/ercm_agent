@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Body, Depends, Query
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -200,15 +200,15 @@ async def list_audit_logs(
 
     return paginated(
         items=[{
-            "id": str(l.id),
-            "operator_id": l.operator_id,
-            "operation": l.operation,
-            "target_table": l.target_table,
-            "target_id": str(l.target_id) if l.target_id else None,
-            "ip_address": str(l.ip_address) if l.ip_address else None,
-            "changes": l.changes,
-            "created_at": l.created_at.isoformat() if l.created_at else None,
-        } for l in logs],
+            "id": str(log_entry.id),
+            "operator_id": log_entry.operator_id,
+            "operation": log_entry.operation,
+            "target_table": log_entry.target_table,
+            "target_id": str(log_entry.target_id) if log_entry.target_id else None,
+            "ip_address": str(log_entry.ip_address) if log_entry.ip_address else None,
+            "changes": log_entry.changes,
+            "created_at": log_entry.created_at.isoformat() if log_entry.created_at else None,
+        } for log_entry in logs],
         total=total,
         page=page,
         page_size=page_size,

@@ -6,19 +6,18 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from hermes.api.dependencies import CurrentUser, check_client_access, require_role
+from hermes.api.dependencies import CurrentUser, check_client_access
 from hermes.core.exceptions import (
     CaseNotFoundError,
     CaseStatusConflictError,
-    WorkflowAlreadyStartedError,
 )
 from hermes.core.response import paginated, success
-from hermes.db.models.integrity import Case, CaseStage, GeneratedDocument
+from hermes.db.models.integrity import Case
 from hermes.db.session import get_db
-from hermes.schemas.case import CaseBrief, CaseCreateRequest, CaseDetail, CaseUpdateRequest
+from hermes.schemas.case import CaseCreateRequest, CaseUpdateRequest
 
 router = APIRouter(prefix="/cases")
 

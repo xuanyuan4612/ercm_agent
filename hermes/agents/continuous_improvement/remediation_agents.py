@@ -24,15 +24,10 @@ from hermes.agents.base import BaseStageAgent
 from hermes.core.logging import get_logger
 from hermes.schemas.agents.common import Confidence
 from hermes.schemas.agents.continuous_improvement import (
-    ClosureAcceptanceOutput,
-    EvidenceReviewOutput,
     IssueIngestOutput,
     KnowledgePrecipitationOutput,
-    PlanReviewOutput,
     RemediationAgentInput,
     RemediationAgentOutput,
-    RemediationOperation,
-    ReminderEscalationOutput,
 )
 
 logger = get_logger(__name__)
@@ -55,7 +50,7 @@ class ImprovementIssueIngestAgent(BaseStageAgent):
         kb_context: str = "",
     ) -> IssueIngestOutput:
         """校验问题数据"""
-        start_time = time.monotonic()
+        time.monotonic()
 
         messages = [
             {"role": "system", "content": (
@@ -413,7 +408,7 @@ class ImprovementKnowledgeAgent(BaseStageAgent):
         kb_context: str = "",
     ) -> KnowledgePrecipitationOutput:
         """经验沉淀"""
-        start_time = time.monotonic()
+        time.monotonic()
 
         messages = [
             {"role": "system", "content": (

@@ -20,9 +20,9 @@ from hermes.agents.base import BaseStageAgent
 from hermes.core.logging import get_logger
 from hermes.schemas.agents.behavioral_risk import (
     BehavioralRiskAgentInput,
+    BehavioralRiskReportOutput,
     BehaviorAnomalyOutput,
     BehaviorDataQualityOutput,
-    BehavioralRiskReportOutput,
     BehaviorManagementReportOutput,
 )
 from hermes.schemas.agents.common import Confidence
@@ -47,7 +47,7 @@ class BehaviorDataQualityAgent(BaseStageAgent):
         kb_context: str = "",
     ) -> BehaviorDataQualityOutput:
         """检查数据质量"""
-        start_time = time.monotonic()
+        time.monotonic()
 
         messages = [
             {"role": "system", "content": (
@@ -124,7 +124,7 @@ class BehaviorAnomalyAgent(BaseStageAgent):
         kb_context: str = "",
     ) -> BehaviorAnomalyOutput:
         """识别行为异常"""
-        start_time = time.monotonic()
+        time.monotonic()
 
         messages = [
             {"role": "system", "content": (

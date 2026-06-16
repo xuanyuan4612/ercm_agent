@@ -23,7 +23,7 @@ from typing import Any
 from hermes.agents.base import BaseStageAgent
 from hermes.agents.prompt_manager import prompt_manager
 from hermes.core.logging import get_logger
-from hermes.schemas.agents.common import AuditType, Confidence
+from hermes.schemas.agents.common import Confidence
 from hermes.schemas.agents.ic_evaluation import (
     AuditPlan,
     AuditPlanAgentInput,

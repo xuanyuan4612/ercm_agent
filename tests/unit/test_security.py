@@ -1,17 +1,15 @@
 """测试安全模块"""
 
-import base64
-import os
 
 import pytest
 from cryptography.fernet import Fernet
 
-from hermes.core.config import Settings, settings
+from hermes.core.config import Settings
 from hermes.core.security import (
     create_access_token,
     create_refresh_token,
-    decrypt_field,
     decode_token,
+    decrypt_field,
     encrypt_field,
     hash_password,
     mask_sensitive,

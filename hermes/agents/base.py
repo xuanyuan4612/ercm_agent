@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -83,9 +83,9 @@ class BaseStageAgent(ABC):
     role_description: str = ""
     _prompt_version: str = "v1.0"
 
-    def __init__(self, profile: Optional[ModuleAgentProfile] = None) -> None:
+    def __init__(self, profile: ModuleAgentProfile | None = None) -> None:
         self.profile = profile
-        self._rag_engine: Optional[RAGEngine] = None
+        self._rag_engine: RAGEngine | None = None
 
     @abstractmethod
     async def run(self, **kwargs: Any) -> Any:
@@ -100,7 +100,7 @@ class BaseStageAgent(ABC):
         self,
         db_session,
         query: str,
-        kb_types: Optional[list[str]] = None,
+        kb_types: list[str] | None = None,
         top_k: int = 5,
     ) -> list[dict]:
         """知识库检索（Langfuse 追踪：retriever span）"""
@@ -113,7 +113,7 @@ class BaseStageAgent(ABC):
         self,
         db_session,
         query: str,
-        kb_types: Optional[list[str]] = None,
+        kb_types: list[str] | None = None,
         top_k: int = 5,
     ) -> str:
         """获取格式化后的检索上下文"""
@@ -131,7 +131,7 @@ class BaseStageAgent(ABC):
         retries: int = 2,
     ) -> str:
         """调用 LLM（含重试和降级，Langfuse 追踪：generation span）"""
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
         for attempt in range(retries + 1):
             try:
                 response = await llm_adapter.invoke(

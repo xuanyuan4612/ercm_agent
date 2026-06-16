@@ -1,10 +1,9 @@
 """测试异常体系"""
 
-import pytest
 
 from hermes.core.exceptions import (
-    AIServiceUnavailableError,
     AccountLockedError,
+    AIServiceUnavailableError,
     BadRequestError,
     CaseNotFoundError,
     CaseStatusConflictError,

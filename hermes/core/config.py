@@ -197,8 +197,8 @@ class Settings(BaseSettings):
             key = base64.b64decode(v, altchars=b"-_", validate=True)
             if len(key) != 32:
                 raise ValueError("ENCRYPTION_KEY must decode to 32 bytes")
-        except Exception:
-            raise ValueError("ENCRYPTION_KEY must be a valid base64-encoded 32-byte key")
+        except Exception as exc:
+            raise ValueError("ENCRYPTION_KEY must be a valid base64-encoded 32-byte key") from exc
         return v
 
 

@@ -9,13 +9,12 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from hermes.db.models.base import UUIDMixin
 from hermes.db.session import Base
-
 
 # ═══════════════════════════════════════════════════════════════
 # 内控评价 (IC Evaluation)

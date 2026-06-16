@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Optional
 
 from hermes.agents.base import BaseStageAgent
 from hermes.agents.prompt_manager import prompt_manager
@@ -52,7 +51,7 @@ class RiskAnalysisAgent(BaseStageAgent):
         db_session,
         analysis_input: RiskAnalysisAgentInput,
         kb_context: str = "",
-        anomaly_results: Optional[list[dict]] = None,
+        anomaly_results: list[dict] | None = None,
     ) -> RiskAnalysisAgentOutput:
         """执行风险分析（三子阶段）"""
         start_time = time.monotonic()

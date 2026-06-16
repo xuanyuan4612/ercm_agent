@@ -7,8 +7,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
-from typing import Any, Literal, TypedDict
+from typing import Any, TypedDict
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
@@ -41,8 +40,8 @@ async def risk_rule_node(state: RiskMonitoringState) -> RiskMonitoringState:
         from hermes.agents.risk_monitoring.risk_rule_agent import RiskRuleAgent
         from hermes.schemas.agents.risk_monitoring import RiskRuleAgentInput, RuleGenerationMode
 
-        agent = RiskRuleAgent()
-        rule_input = RiskRuleAgentInput(
+        RiskRuleAgent()
+        RiskRuleAgentInput(
             task_id=state.get("task_id", ""),
             mode=RuleGenerationMode.MANUAL_INPUT,
         )

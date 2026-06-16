@@ -51,9 +51,9 @@ class Case(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
     updated_by: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     # 关联
-    stages: Mapped[list["CaseStage"]] = relationship(back_populates="case", order_by="CaseStage.stage_order")
-    approvals: Mapped[list["HumanApproval"]] = relationship(back_populates="case")
-    documents: Mapped[list["GeneratedDocument"]] = relationship(back_populates="case")
+    stages: Mapped[list[CaseStage]] = relationship(back_populates="case", order_by="CaseStage.stage_order")
+    approvals: Mapped[list[HumanApproval]] = relationship(back_populates="case")
+    documents: Mapped[list[GeneratedDocument]] = relationship(back_populates="case")
 
 
 class CaseStage(UUIDMixin, Base):
@@ -75,7 +75,7 @@ class CaseStage(UUIDMixin, Base):
     error_info: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     retry_count: Mapped[int] = mapped_column(SmallInteger, default=0)
 
-    case: Mapped["Case"] = relationship(back_populates="stages")
+    case: Mapped[Case] = relationship(back_populates="stages")
 
 
 class HumanApproval(UUIDMixin, Base):
@@ -96,7 +96,7 @@ class HumanApproval(UUIDMixin, Base):
     signature: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    case: Mapped["Case"] = relationship(back_populates="approvals")
+    case: Mapped[Case] = relationship(back_populates="approvals")
 
 
 class GeneratedDocument(UUIDMixin, Base):
@@ -117,4 +117,4 @@ class GeneratedDocument(UUIDMixin, Base):
     storage_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    case: Mapped["Case"] = relationship(back_populates="documents")
+    case: Mapped[Case] = relationship(back_populates="documents")

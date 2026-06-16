@@ -142,7 +142,7 @@ async def regenerate_content(
     db: AsyncSession = Depends(get_db),
 ):
     """划词调整：碳基选中 AI 输出段落，提供修改指令，AI 重新生成指定部分。"""
-    case = await _get_case(case_id, current_user, db)
+    await _get_case(case_id, current_user, db)
 
     # 划词调整：调用 LLM 定向重新生成选中段落
     # 当前返回固定值：LLM 定向重新生成待接入
@@ -151,7 +151,11 @@ async def regenerate_content(
         response = await llm_adapter.invoke(
             messages=[
                 {"role": "system", "content": "你是赫尔墨斯风控系统的AI助手。根据指令对指定文本进行修改。"},
-                {"role": "user", "content": f"原文:\n{request.selected_text}\n\n修改指令:\n{request.instruction}\n\n请输出修改后的文本（仅输出修改后的文本，不要额外说明）："},
+                {"role": "user", "content": (
+                    f"原文:\n{request.selected_text}\n\n"
+                    f"修改指令:\n{request.instruction}\n\n"
+                    f"请输出修改后的文本（仅输出修改后的文本，不要额外说明）："
+                )},
             ],
             temperature=0.3,
             max_tokens=1024,

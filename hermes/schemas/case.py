@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
-from typing import Any
+from enum import StrEnum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 
-class FraudSource(str, Enum):
+class FraudSource(StrEnum):
     manual = "manual"
     phone = "phone"
     email = "email"
@@ -17,13 +16,13 @@ class FraudSource(str, Enum):
     agent = "agent"
 
 
-class Client(str, Enum):
+class Client(StrEnum):
     ecovacs = "ecovacs"
     tineco = "tineco"
     group = "group"
 
 
-class CaseStatus(str, Enum):
+class CaseStatus(StrEnum):
     pending = "pending"
     investigating = "investigating"
     disposing = "disposing"
@@ -32,7 +31,7 @@ class CaseStatus(str, Enum):
     transferred = "transferred"
 
 
-class StageName(str, Enum):
+class StageName(StrEnum):
     intake = "intake"
     investigation = "investigation"
     analysis = "analysis"

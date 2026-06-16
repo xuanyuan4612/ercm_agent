@@ -23,16 +23,13 @@ import sys
 from pathlib import Path
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 # 确保项目根目录在 sys.path 中
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from hermes.core.config import settings
 from hermes.core.security import hash_password
 from hermes.db.models.shared import User
 from hermes.db.session import async_session_factory
-
 
 DEFAULT_ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 DEFAULT_ADMIN_DISPLAY_NAME = os.getenv("ADMIN_DISPLAY_NAME", "系统管理员")
@@ -79,7 +76,7 @@ async def seed() -> None:
         print("=" * 62)
         print(f"  用户名:   {DEFAULT_ADMIN_USERNAME}")
         print(f"  密码:     {password}")
-        print(f"  角色:     group (超级管理员)")
+        print("  角色:     group (超级管理员)")
         print(f"  显示名:   {DEFAULT_ADMIN_DISPLAY_NAME}")
         print(f"  部门:     {DEFAULT_ADMIN_DEPARTMENT}")
         print("=" * 62)

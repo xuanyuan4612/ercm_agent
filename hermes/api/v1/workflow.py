@@ -5,21 +5,19 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from hermes.api.dependencies import CurrentUser, check_client_access
 from hermes.core.exceptions import (
     CaseNotFoundError,
-    NoPendingApprovalError,
     WorkflowAlreadyCompletedError,
     WorkflowAlreadyStartedError,
-    WorkflowExecutionError,
     WorkflowNotStartedError,
 )
-from hermes.core.response import success
 from hermes.core.logging import get_logger
+from hermes.core.response import success
 from hermes.db.models.integrity import Case, CaseStage
 from hermes.db.session import get_db
 from hermes.schemas.workflow import (
@@ -77,9 +75,10 @@ async def start_workflow(
     # 生产环境：通过 Celery task 异步执行 LangGraph graph.ainvoke()
     # 当前直接进入守门等待状态
     try:
-        from hermes.workflows.integrity.graph import integrity_graph
         # 异步启动工作流（后台执行，不阻塞响应）
         import asyncio
+
+        from hermes.workflows.integrity.graph import integrity_graph
         asyncio.create_task(
             integrity_graph.start_workflow(str(case.id), case.task_id, case.client, case.fraud_source)
         )

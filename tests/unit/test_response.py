@@ -1,6 +1,5 @@
 """测试统一响应模块"""
 
-import pytest
 
 from hermes.core.response import paginated, success
 

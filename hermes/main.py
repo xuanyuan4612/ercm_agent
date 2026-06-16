@@ -7,8 +7,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +18,7 @@ from hermes.api.v1.router import api_router
 from hermes.core.config import settings
 from hermes.core.exceptions import HermesError
 from hermes.core.logging import get_logger, setup_logging
-from hermes.core.observability import flush, get_langfuse, shutdown
+from hermes.core.observability import get_langfuse, shutdown
 from hermes.middleware.audit import AuditMiddleware
 from hermes.middleware.langfuse_trace import LangfuseTraceMiddleware
 from hermes.middleware.rate_limit import RateLimitMiddleware
@@ -70,7 +70,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.warning("elasticsearch_ping_failed")
             app.state.es = None
     except Exception as e:
-        logger.warning("elasticsearch_unavailable", error=str(e), message="Elasticsearch 未配置或不可用，全文搜索降级为数据库搜索")
+        logger.warning("elasticsearch_unavailable", error=str(e),
+                       message="Elasticsearch 未配置或不可用，全文搜索降级为数据库搜索")
         app.state.es = None
 
     # 初始化 MinIO 客户端（可选依赖）

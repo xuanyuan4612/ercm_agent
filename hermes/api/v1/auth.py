@@ -14,7 +14,6 @@ from hermes.core.security import (
     create_access_token,
     create_refresh_token,
     decode_token,
-    hash_password,
     verify_password,
 )
 from hermes.db.models.shared import User
@@ -24,7 +23,6 @@ from hermes.schemas.auth import (
     LoginResponse,
     RefreshRequest,
     RefreshResponse,
-    TokenResponse,
     UserInfo,
 )
 
@@ -89,8 +87,8 @@ async def refresh(request: RefreshRequest, db: AsyncSession = Depends(get_db)):
     """刷新 access_token"""
     try:
         payload = decode_token(request.refresh_token)
-    except ValueError as e:
-        raise UnauthorizedError(detail="Invalid refresh token")
+    except ValueError as exc:
+        raise UnauthorizedError(detail="Invalid refresh token") from exc
 
     if payload.get("type") != "refresh":
         raise UnauthorizedError(detail="Not a refresh token")
@@ -116,16 +114,9 @@ async def refresh(request: RefreshRequest, db: AsyncSession = Depends(get_db)):
 async def logout(current_user: CurrentUser):
     """登出（使 refresh_token 失效）"""
     # 将 refresh_token 加入黑名单（当前降级为无状态登出）
-    try:
-        from fastapi import Request
-        # 尝试获取 Redis 连接加入黑名单
-        # redis_client = current_user._redis
-        # if redis_client:
-        #     await redis_client.sadd("token_blacklist", refresh_token)
-        #     await redis_client.expire("token_blacklist", settings.REFRESH_TOKEN_EXPIRE_SECONDS)
-        pass
-    except Exception:
-        pass
+    import contextlib
+    with contextlib.suppress(Exception):
+        pass  # Redis 黑名单待接入，当前无状态登出
     return success(message="已登出（当前无状态登出模式，Redis 黑名单待接入）")
 
 

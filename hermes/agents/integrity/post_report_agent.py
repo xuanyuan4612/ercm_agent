@@ -15,12 +15,10 @@
 from __future__ import annotations
 
 import json
-import re
 import time
-from typing import Any, Optional
+from typing import Any
 
 from hermes.agents.integrity.schemas import (
-    Client,
     Confidence,
     PostReportInput,
     PostReportOutput,
@@ -83,7 +81,7 @@ class PostReportAgent:
         messages = self._parse_prompt_to_messages(prompt_text)
 
         retry_count = 0
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
 
         for attempt in range(3):
             try:

@@ -15,20 +15,17 @@
 from __future__ import annotations
 
 import json
-import re
 import time
-from typing import Any, Optional
+from typing import Any
 
 from hermes.agents.base import BaseStageAgent
 from hermes.agents.prompt_manager import prompt_manager
-from hermes.agents.rag_engine import KB_TYPE_MAP
 from hermes.core.logging import get_logger
 from hermes.schemas.agents.common import Confidence
 from hermes.schemas.agents.risk_monitoring import (
     RiskRule,
     RiskRuleAgentInput,
     RiskRuleAgentOutput,
-    RuleGenerationMode,
 )
 
 logger = get_logger(__name__)

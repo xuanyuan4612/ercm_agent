@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import contextvars
 import uuid
-from typing import Any, AsyncGenerator, Callable, Optional
+from typing import Any
 
 from langfuse import Langfuse, get_client, observe, propagate_attributes
 from langfuse.langchain import CallbackHandler

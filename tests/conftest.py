@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -98,6 +98,7 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 async def client(db_session: AsyncSession):
     """创建测试 HTTP 客户端（需要 db_session fixture）。"""
     from httpx import ASGITransport, AsyncClient
+
     from hermes.main import app
 
     transport = ASGITransport(app=app)

@@ -287,7 +287,8 @@ def _safe_confidence(value: Any) -> Confidence:
 def _safe_evidence_sufficiency(value: Any) -> EvidenceSufficiency:
     if isinstance(value, EvidenceSufficiency):
         return value
-    mapping = {"sufficient": EvidenceSufficiency.SUFFICIENT, "partial": EvidenceSufficiency.PARTIAL, "insufficient": EvidenceSufficiency.INSUFFICIENT}
+    mapping = {"sufficient": EvidenceSufficiency.SUFFICIENT, "partial": EvidenceSufficiency.PARTIAL,
+            "insufficient": EvidenceSufficiency.INSUFFICIENT}
     return mapping.get(str(value).lower(), EvidenceSufficiency.PARTIAL)
 
 

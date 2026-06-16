@@ -35,7 +35,7 @@ async def get_current_user(
     try:
         payload = decode_token(token)
     except ValueError as e:
-        raise TokenExpiredError(detail=str(e))
+        raise TokenExpiredError(detail=str(e)) from e
 
     user_id = payload.get("sub")
     if not user_id:

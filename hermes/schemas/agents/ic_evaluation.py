@@ -8,13 +8,11 @@
 
 from __future__ import annotations
 
-from enum import Enum
-from typing import Optional, List, Dict, Any
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 from hermes.schemas.agents.common import AuditType, Client, Confidence
-
 
 # ═══════════════════════════════════════════════════════════════
 # 审计方案 Agent (audit-plan-agent) — 共享
@@ -28,25 +26,25 @@ class AuditPlanAgentInput(BaseModel):
 
     # 通用参数
     audit_objective: str
-    audit_focus: List[str] = Field(default_factory=list)
+    audit_focus: list[str] = Field(default_factory=list)
     audit_period: str = ""
     audited_entity: str = ""
     project_leader: str = ""
-    project_members: List[str] = Field(default_factory=list)
+    project_members: list[str] = Field(default_factory=list)
 
     # 内控评价专用
-    business_cycles: Optional[List[str]] = None
-    control_activities: Optional[List[dict]] = None
-    evaluation_criteria: Optional[str] = None
+    business_cycles: list[str] | None = None
+    control_activities: list[dict] | None = None
+    evaluation_criteria: str | None = None
 
     # 专项审计专用
-    audit_method_preference: Optional[str] = None
-    sampling_requirements: Optional[str] = None
+    audit_method_preference: str | None = None
+    sampling_requirements: str | None = None
 
     # 离任审计专用
-    departing_person_info: Optional[dict] = None
-    position_duties: Optional[List[str]] = None
-    tenure_years: Optional[float] = None
+    departing_person_info: dict | None = None
+    position_duties: list[str] | None = None
+    tenure_years: float | None = None
 
     context_version: str = "1.0"
 
@@ -54,16 +52,16 @@ class AuditPlanAgentInput(BaseModel):
 class AuditPlan(BaseModel):
     """审计方案统一输出结构"""
     project_basic_info: dict = Field(default_factory=dict)
-    evaluation_basis: List[str] = Field(default_factory=list)
+    evaluation_basis: list[str] = Field(default_factory=list)
     audit_scope: dict = Field(default_factory=dict)
-    audit_implementation_rules: List[dict] = Field(default_factory=list)
+    audit_implementation_rules: list[dict] = Field(default_factory=list)
     deficiency_criteria: dict = Field(default_factory=dict)
 
-    sampling_strategy: Optional[dict] = None
+    sampling_strategy: dict | None = None
     timeline: dict = Field(default_factory=dict)
     personnel_assignment: dict = Field(default_factory=dict)
 
-    referenced_historical_plans: List[str] = Field(default_factory=list)
+    referenced_historical_plans: list[str] = Field(default_factory=list)
     confidence: Confidence = Confidence.MEDIUM
 
 
@@ -71,18 +69,18 @@ class AuditPlanAgentOutput(BaseModel):
     """审计方案 Agent 输出"""
     audit_plan: AuditPlan
     plan_rationale: str = ""
-    similar_plans_referenced: List[dict] = Field(default_factory=list)
+    similar_plans_referenced: list[dict] = Field(default_factory=list)
     confidence: Confidence = Confidence.MEDIUM
-    plan_doc_id: Optional[str] = None
+    plan_doc_id: str | None = None
     processing_time_ms: int = 0
-    kb_sources: List[str] = Field(default_factory=list)
+    kb_sources: list[str] = Field(default_factory=list)
 
 
 # ═══════════════════════════════════════════════════════════════
 # 审计检查 Agent (audit-check-agent) — 共享
 # ═══════════════════════════════════════════════════════════════
 
-class CheckType(str, Enum):
+class CheckType(StrEnum):
     DESIGN = "design"
     EXECUTION = "execution"
 
@@ -96,14 +94,14 @@ class AuditCheckAgentInput(BaseModel):
     audit_plan: AuditPlan
 
     # 设计缺陷评估专用
-    design_test_matrix: Optional[List[dict]] = None
-    policy_documents: Optional[List[str]] = None
-    historical_design_deficiencies: Optional[List[dict]] = None
+    design_test_matrix: list[dict] | None = None
+    policy_documents: list[str] | None = None
+    historical_design_deficiencies: list[dict] | None = None
 
     # 执行缺陷评估专用
-    execution_test_results: Optional[List[dict]] = None
-    manual_upload_data: Optional[List[dict]] = None
-    historical_execution_deficiencies: Optional[List[dict]] = None
+    execution_test_results: list[dict] | None = None
+    manual_upload_data: list[dict] | None = None
+    historical_execution_deficiencies: list[dict] | None = None
 
     # 评分标准
     scoring_criteria: dict = Field(default_factory=dict)
@@ -115,7 +113,7 @@ class Deficiency(BaseModel):
     deficiency_type: str  # 设计缺陷/执行缺陷
     deficiency_category: str = ""
     description: str
-    related_policy: Optional[str] = None
+    related_policy: str | None = None
     related_control: str = ""
     business_cycle: str = ""
     severity_score: float = 0.0
@@ -126,10 +124,10 @@ class Deficiency(BaseModel):
 
 class AuditCheckAgentOutput(BaseModel):
     """审计检查 Agent 输出"""
-    deficiencies: List[Deficiency] = Field(default_factory=list)
+    deficiencies: list[Deficiency] = Field(default_factory=list)
     total_score: float = 0.0
     score_breakdown: dict = Field(default_factory=dict)
-    working_paper_doc_id: Optional[str] = None
+    working_paper_doc_id: str | None = None
     confidence: Confidence = Confidence.MEDIUM
     processing_time_ms: int = 0
 
@@ -144,13 +142,13 @@ class InterviewAgentInput(BaseModel):
     calling_module: str  # ic_evaluation/special_audit/exit_audit/integrity
 
     audit_plan_summary: str = ""
-    previous_findings: Optional[List[str]] = None
+    previous_findings: list[str] | None = None
 
-    target_departments: List[str] = Field(default_factory=list)
-    target_positions: List[str] = Field(default_factory=list)
-    personnel_pool: Optional[List[dict]] = None
+    target_departments: list[str] = Field(default_factory=list)
+    target_positions: list[str] = Field(default_factory=list)
+    personnel_pool: list[dict] | None = None
 
-    question_focus_areas: List[str] = Field(default_factory=list)
+    question_focus_areas: list[str] = Field(default_factory=list)
 
 
 class InterviewQuestionnaire(BaseModel):
@@ -159,16 +157,16 @@ class InterviewQuestionnaire(BaseModel):
     position: str
     department: str
     interview_strategy: str = ""
-    questions: List[dict] = Field(default_factory=list)  # [{order, question, purpose, expected_info}]
+    questions: list[dict] = Field(default_factory=list)  # [{order, question, purpose, expected_info}]
     estimated_duration_min: int = 30
 
 
 class InterviewAgentOutput(BaseModel):
     """访谈 Agent 输出"""
     interview_plan: dict = Field(default_factory=dict)
-    questionnaires: List[InterviewQuestionnaire] = Field(default_factory=list)
-    interview_conclusion_analysis: Optional[str] = None
-    need_follow_up: Optional[bool] = None
-    follow_up_questions: Optional[List[str]] = None
+    questionnaires: list[InterviewQuestionnaire] = Field(default_factory=list)
+    interview_conclusion_analysis: str | None = None
+    need_follow_up: bool | None = None
+    follow_up_questions: list[str] | None = None
     confidence: Confidence = Confidence.MEDIUM
     processing_time_ms: int = 0

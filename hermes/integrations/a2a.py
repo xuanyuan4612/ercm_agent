@@ -11,7 +11,6 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from hermes.core.config import settings
 from hermes.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -76,7 +75,7 @@ class A2AAdapter:
             )
 
         task_id = str(uuid.uuid4())
-        message = {
+        {
             "message_id": str(uuid.uuid4()),
             "protocol_version": "1.0",
             "source_agent": "hermes",
@@ -109,7 +108,10 @@ class A2AAdapter:
             "task_id": task_id,
             "status": "queued",
             "target_agent": A2A_AGENTS[target_agent]["name"],
-            "message": f"已连通 {A2A_AGENTS[target_agent]['name']}({target_agent})智能体，任务已入队（当前为固定返回，A2A消息队列待接入）",
+            "message": (
+                f"已连通 {A2A_AGENTS[target_agent]['name']}({target_agent})智能体，"
+                f"任务已入队（当前为固定返回，A2A消息队列待接入）"
+            ),
         }
 
     async def handle_callback(
@@ -121,7 +123,7 @@ class A2AAdapter:
         """
         status = callback_data.get("status")
         original_message_id = callback_data.get("original_message_id")
-        result = callback_data.get("result", {})
+        callback_data.get("result", {})
 
         logger.info(
             "a2a_callback_received",

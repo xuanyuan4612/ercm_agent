@@ -33,7 +33,6 @@ Redis Checkpointer：
 from __future__ import annotations
 
 import asyncio
-import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal, TypedDict
 
@@ -156,7 +155,7 @@ async def investigation_node(state: IntegrityState) -> IntegrityState:
     # 尝试集成 InvestigationAgent
     try:
         from hermes.agents.integrity.investigation_agent import InvestigationAgent
-        from hermes.agents.integrity.schemas import InvestigationAgentInput, Client
+        from hermes.agents.integrity.schemas import Client, InvestigationAgentInput
 
         agent = InvestigationAgent()
         intake_context = state.get("intake_report", {}) or {}
@@ -233,7 +232,7 @@ async def disposition_node(state: IntegrityState) -> IntegrityState:
 
     try:
         from hermes.agents.integrity.disposition_agent import DispositionAgent
-        from hermes.agents.integrity.schemas import DispositionAgentInput, Client
+        from hermes.agents.integrity.schemas import Client, DispositionAgentInput
 
         agent = DispositionAgent()
         case_conclusion = state.get("case_conclusion", {}) or {}
@@ -268,7 +267,7 @@ async def enforcement_node(state: IntegrityState) -> IntegrityState:
     # 尝试集成 EnforcementAgent，并触发 A2A 通信
     try:
         from hermes.agents.integrity.enforcement_agent import EnforcementAgent
-        from hermes.agents.integrity.schemas import EnforcementAgentInput, Client
+        from hermes.agents.integrity.schemas import Client, EnforcementAgentInput
 
         agent = EnforcementAgent()
         penalty = state.get("penalty_opinion", {}) or {}
@@ -305,7 +304,7 @@ async def post_report_node(state: IntegrityState) -> IntegrityState:
 
     try:
         from hermes.agents.integrity.post_report_agent import PostReportAgent
-        from hermes.agents.integrity.schemas import PostReportInput, DispositionPath
+        from hermes.agents.integrity.schemas import DispositionPath, PostReportInput
 
         agent = PostReportAgent()
         case_conclusion = state.get("case_conclusion", {}) or {}

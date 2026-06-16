@@ -4,10 +4,8 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
-import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -70,7 +68,7 @@ def decode_token(token: str) -> dict[str, Any]:
         )
         return payload
     except JWTError as e:
-        raise ValueError(f"Invalid token: {e}")
+        raise ValueError(f"Invalid token: {e}") from e
 
 
 # ── AES-256-GCM 字段加解密 ────────────────────────────────────

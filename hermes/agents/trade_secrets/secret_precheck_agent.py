@@ -24,7 +24,6 @@ from hermes.schemas.agents.common import Confidence
 from hermes.schemas.agents.trade_secrets import (
     SecrecyPrecheckOutput,
     SecrecyReviewAgentInput,
-    ReviewType,
 )
 
 logger = get_logger(__name__)

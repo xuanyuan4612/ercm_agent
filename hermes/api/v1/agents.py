@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 
 from hermes.agents.profiles import MODULE_PROFILES, get_profile
 from hermes.api.dependencies import CurrentUser

@@ -110,7 +110,10 @@ class PromptManager:
     def _default_prompt(stage: str) -> dict[str, str]:
         """默认 Prompt 模板（无 YAML 文件时回退）"""
         return {
-            "system": f"你是赫尔墨斯风控系统的 AI 助手，当前正在执行 {stage} 阶段的任务。请根据提供的案件信息和知识库内容，给出专业、准确的分析。",
+            "system": (
+                f"你是赫尔墨斯风控系统的 AI 助手，当前正在执行 {stage} 阶段的任务。"
+                f"请根据提供的案件信息和知识库内容，给出专业、准确的分析。"
+            ),
             "user": "案件信息：{{ case_info }}\n\n请根据以上信息开始分析。",
         }
 

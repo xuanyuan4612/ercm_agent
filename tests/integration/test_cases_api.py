@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
-
 
 class TestCreateCase:
     """POST /api/v1/cases"""

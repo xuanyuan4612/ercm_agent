@@ -16,7 +16,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 from hermes.db.models.base import UUIDMixin
 from hermes.db.session import Base
 
-
 # ═══════════════════════════════════════════════════════════════
 # 商业秘密 (Trade Secret)
 # ═══════════════════════════════════════════════════════════════

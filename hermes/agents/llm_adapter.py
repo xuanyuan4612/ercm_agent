@@ -11,9 +11,9 @@ LLM 适配器
 
 from __future__ import annotations
 
-import asyncio
 import time
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 from langchain_openai import ChatOpenAI
 
@@ -130,7 +130,7 @@ class LLMAdapter:
         except Exception as e:
             self._on_failure()
             logger.error("llm_invoke_failed", error=str(e))
-            raise AIServiceUnavailableError(detail=str(e))
+            raise AIServiceUnavailableError(detail=str(e)) from e
 
     async def stream(
         self, messages: list[dict], *, trace_name: str | None = None, **kwargs: Any
@@ -161,7 +161,7 @@ class LLMAdapter:
         except Exception as e:
             self._on_failure()
             logger.error("llm_stream_failed", error=str(e))
-            raise AIServiceUnavailableError(detail=str(e))
+            raise AIServiceUnavailableError(detail=str(e)) from e
 
     @staticmethod
     def _get_trace_handler(trace_name: str | None = None):

@@ -4,20 +4,17 @@
 
 from __future__ import annotations
 
-from enum import Enum
-from typing import Optional, List, Dict, Any
-
-from pydantic import BaseModel, Field
+from enum import StrEnum
 
 
-class Client(str, Enum):
+class Client(StrEnum):
     """事业部"""
     ECOVACS = "ecovacs"
     TINECO = "tineco"
     GROUP = "group"
 
 
-class Confidence(str, Enum):
+class Confidence(StrEnum):
     """置信度"""
     HIGH = "high"
     MEDIUM = "medium"
@@ -25,7 +22,7 @@ class Confidence(str, Enum):
     UNABLE = "unable"
 
 
-class RiskLevel(str, Enum):
+class RiskLevel(StrEnum):
     """风险等级"""
     HIGH = "高"
     MEDIUM = "中"
@@ -33,21 +30,21 @@ class RiskLevel(str, Enum):
     CRITICAL = "严重"
 
 
-class Urgency(str, Enum):
+class Urgency(StrEnum):
     """紧急程度"""
     URGENT = "紧急"
     NORMAL = "一般"
     LOW = "低"
 
 
-class AuditType(str, Enum):
+class AuditType(StrEnum):
     """审计类型"""
     INTERNAL_CONTROL = "ic_evaluation"
     SPECIAL_AUDIT = "special_audit"
     EXIT_AUDIT = "exit_audit"
 
 
-class IssueSource(str, Enum):
+class IssueSource(StrEnum):
     """问题来源"""
     INTEGRITY = "integrity"
     RISK_MONITOR = "risk_monitor"
@@ -59,7 +56,7 @@ class IssueSource(str, Enum):
     BUSINESS_ASSIGNED = "business_assigned"
 
 
-class IssueStatus(str, Enum):
+class IssueStatus(StrEnum):
     """整改问题状态"""
     PENDING_PUSH = "问题待推送"
     PLAN_PENDING = "计划待提交"

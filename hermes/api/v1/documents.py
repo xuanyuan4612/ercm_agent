@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Query, UploadFile
+from fastapi import APIRouter, Depends, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -72,13 +72,10 @@ async def download_document(
         raise NotFoundError(message="文档不存在", detail=f"doc_id={doc_id}")
 
     # 从 MinIO 获取文件流并返回（当前降级为本地文件模式）
-    from fastapi import Request
     from fastapi.responses import FileResponse, StreamingResponse
 
     # 尝试 MinIO 下载
     try:
-        from fastapi import Request as FastAPIRequest
-        import io
 
         minio_client = getattr(doc, '_minio_client', None)
         if not minio_client:
@@ -93,7 +90,6 @@ async def download_document(
                         break
 
         if minio_client and doc.storage_bucket and doc.storage_key:
-            from hermes.core.config import settings
             data = minio_client.get_object(doc.storage_bucket, doc.storage_key)
             return StreamingResponse(
                 data.stream(64 * 1024),
@@ -129,8 +125,9 @@ async def speech_to_text(
     task_id = str(uuid.uuid4())
     try:
         # 保存文件到临时目录（MinIO 接入前使用本地存储）
-        import aiofiles
         import os
+
+        import aiofiles
         upload_dir = os.path.join(os.path.dirname(__file__), "..", "..", "uploads")
         os.makedirs(upload_dir, exist_ok=True)
         file_path = os.path.join(upload_dir, f"{task_id}_{file.filename}")

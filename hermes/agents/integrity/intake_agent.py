@@ -19,15 +19,12 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any, Optional
+from typing import Any
 
 from hermes.agents.integrity.schemas import (
-    Client,
     Confidence,
-    FraudSource,
     IntakeAgentInput,
     IntakeAgentOutput,
-    InvestigationDecision,
     LegalReference,
     RiskLevel,
     TransferTarget,
@@ -36,8 +33,6 @@ from hermes.agents.integrity.schemas import (
 )
 from hermes.agents.llm_adapter import llm_adapter
 from hermes.agents.prompt_manager import prompt_manager
-from hermes.agents.rag_engine import KB_TYPE_MAP
-from hermes.agents.tool_system import tool_registry
 from hermes.core.exceptions import AIServiceUnavailableError
 from hermes.core.logging import get_logger
 
@@ -118,7 +113,7 @@ class IntakeAgent:
 
         # 4. 调用 LLM
         retry_count = 0
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
 
         for attempt in range(3):  # 最多3次尝试
             try:
@@ -285,7 +280,7 @@ def _format_case_from_input(case_input: IntakeAgentInput) -> str:
         for at in case_input.audio_transcriptions[:3]:
             snippet = at.text[:300] + "..." if len(at.text) > 300 else at.text
             audio_summaries.append(f"  [{at.file_id}] ({at.language}): {snippet}")
-        lines.append(f"语音转录:\n" + "\n".join(audio_summaries))
+        lines.append("语音转录:\n" + "\n".join(audio_summaries))
 
     # OCR 关键文本
     if case_input.ocr_texts:
@@ -293,7 +288,7 @@ def _format_case_from_input(case_input: IntakeAgentInput) -> str:
         for ocr in case_input.ocr_texts[:3]:
             snippet = ocr.text[:300] + "..." if len(ocr.text) > 300 else ocr.text
             ocr_summaries.append(f"  [{ocr.file_id}]: {snippet}")
-        lines.append(f"图片OCR:\n" + "\n".join(ocr_summaries))
+        lines.append("图片OCR:\n" + "\n".join(ocr_summaries))
 
     if case_input.reported_files:
         lines.append(f"附件数量: {len(case_input.reported_files)}")

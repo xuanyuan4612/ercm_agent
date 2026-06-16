@@ -8,15 +8,14 @@ Agent: risk-rule-agent, risk-analysis-agent
 
 from __future__ import annotations
 
-from enum import Enum
-from typing import Optional, List, Dict, Any
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 from hermes.schemas.agents.common import Confidence
 
 
-class RuleGenerationMode(str, Enum):
+class RuleGenerationMode(StrEnum):
     BATCH_UPLOAD = "batch_upload"
     MANUAL_INPUT = "manual_input"
 
@@ -26,30 +25,30 @@ class RiskRuleAgentInput(BaseModel):
     task_id: str
     mode: RuleGenerationMode
 
-    uploaded_rules: Optional[List[dict]] = Field(None, description="已上传的风险场景清单")
-    manual_scenario: Optional[str] = Field(None, description="人工自定义场景描述")
-    target_business_cycle: Optional[str] = Field(None, description="目标业务循环")
-    target_department: Optional[str] = Field(None, description="目标部门/事业部")
+    uploaded_rules: list[dict] | None = Field(None, description="已上传的风险场景清单")
+    manual_scenario: str | None = Field(None, description="人工自定义场景描述")
+    target_business_cycle: str | None = Field(None, description="目标业务循环")
+    target_department: str | None = Field(None, description="目标部门/事业部")
 
     db_schema_context: dict = Field(default_factory=dict, description="数据库字段及含义")
-    historical_cases: List[dict] = Field(default_factory=list, description="历史案例参考")
+    historical_cases: list[dict] = Field(default_factory=list, description="历史案例参考")
 
 
 class RiskRule(BaseModel):
     """单条风险规则"""
     business_unit: str
-    channel: Optional[str] = None
-    business_format: Optional[str] = None
+    channel: str | None = None
+    business_format: str | None = None
     business_cycle: str
     department: str
-    position: Optional[str] = None
-    personnel_info: Optional[str] = None
+    position: str | None = None
+    personnel_info: str | None = None
     level1_scenario: str
     level2_scenario: str
     level3_scenario: str
     sql_statement: str
     risk_level: str = "中"
-    threshold: Optional[str] = None
+    threshold: str | None = None
     monitor_frequency: str = "daily"
     monitor_business_unit: str
     use_external_data: bool = False
@@ -57,14 +56,14 @@ class RiskRule(BaseModel):
 
 class RiskRuleAgentOutput(BaseModel):
     """风险规则 Agent 输出"""
-    rules: List[RiskRule]
-    sql_validation_results: List[dict] = Field(default_factory=list)
+    rules: list[RiskRule]
+    sql_validation_results: list[dict] = Field(default_factory=list)
     generation_rationale: str = ""
     confidence: Confidence = Confidence.MEDIUM
     processing_time_ms: int = 0
 
 
-class RiskExecutionMode(str, Enum):
+class RiskExecutionMode(StrEnum):
     SCHEDULED = "scheduled"
     MANUAL = "manual"
 
@@ -74,12 +73,12 @@ class RiskAnalysisAgentInput(BaseModel):
     task_id: str
     execution_mode: RiskExecutionMode = RiskExecutionMode.SCHEDULED
 
-    risk_rules: List[RiskRule] = Field(default_factory=list, description="已审核通过的风险规则清单")
-    business_data_sources: List[str] = Field(default_factory=list)
-    external_data_sources: List[str] = Field(default_factory=list)
+    risk_rules: list[RiskRule] = Field(default_factory=list, description="已审核通过的风险规则清单")
+    business_data_sources: list[str] = Field(default_factory=list)
+    external_data_sources: list[str] = Field(default_factory=list)
 
-    target_business_units: List[str] = Field(default_factory=list)
-    execution_date_range: Optional[dict] = Field(None, description="手动指定日期范围")
+    target_business_units: list[str] = Field(default_factory=list)
+    execution_date_range: dict | None = Field(None, description="手动指定日期范围")
 
 
 class AnomalyRecord(BaseModel):
@@ -97,8 +96,8 @@ class MergedEntityRisk(BaseModel):
     entity_id: str
     entity_type: str  # employee/supplier/dealer/contact
     anomaly_count: int = 0
-    anomaly_records: List[AnomalyRecord] = Field(default_factory=list)
-    involved_indicators: List[str] = Field(default_factory=list)
+    anomaly_records: list[AnomalyRecord] = Field(default_factory=list)
+    involved_indicators: list[str] = Field(default_factory=list)
 
 
 class RiskClassification(BaseModel):
@@ -109,22 +108,22 @@ class RiskClassification(BaseModel):
     scope: str = ""
     impact_assessment: dict = Field(default_factory=dict)
     disposal_suggestion: str = ""
-    push_targets: List[str] = Field(default_factory=list)
+    push_targets: list[str] = Field(default_factory=list)
 
 
 class RiskAnalysisAgentOutput(BaseModel):
     """风险分析 Agent 输出"""
-    anomaly_records: List[AnomalyRecord] = Field(default_factory=list)
+    anomaly_records: list[AnomalyRecord] = Field(default_factory=list)
     anomaly_summary: dict = Field(default_factory=dict)
-    anomaly_pivot_table_doc_id: Optional[str] = None
-    anomaly_analysis_report_doc_id: Optional[str] = None
+    anomaly_pivot_table_doc_id: str | None = None
+    anomaly_analysis_report_doc_id: str | None = None
     ai_filter_removed_count: int = 0
 
-    merged_entities: List[MergedEntityRisk] = Field(default_factory=list)
+    merged_entities: list[MergedEntityRisk] = Field(default_factory=list)
     entity_merge_rationale: str = ""
-    merged_pivot_table_doc_id: Optional[str] = None
-    single_entity_reports: List[dict] = Field(default_factory=list)
+    merged_pivot_table_doc_id: str | None = None
+    single_entity_reports: list[dict] = Field(default_factory=list)
 
-    risk_classifications: List[RiskClassification] = Field(default_factory=list)
+    risk_classifications: list[RiskClassification] = Field(default_factory=list)
     confidence: Confidence = Confidence.MEDIUM
     processing_time_ms: int = 0

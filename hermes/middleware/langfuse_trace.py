@@ -13,7 +13,7 @@ Langfuse 分布式追踪中间件
 from __future__ import annotations
 
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -23,7 +23,6 @@ from hermes.core.logging import get_logger
 from hermes.core.observability import (
     create_http_trace,
     finalize_http_trace,
-    flush,
     get_langfuse,
     set_trace_context,
 )
@@ -91,7 +90,7 @@ class LangfuseTraceMiddleware(BaseHTTPMiddleware):
         else:
             status_code = response.status_code
         finally:
-            elapsed_ms = int((time.monotonic() - start_time) * 1000)
+            int((time.monotonic() - start_time) * 1000)
 
             # 完成 trace
             await finalize_http_trace(
