@@ -1,9 +1,8 @@
-# 赫尔墨斯（Hermes）Docker 镜像
-# 多阶段构建：builder 安装依赖 → runtime 运行
-# docker build -t ghcr.io/<username>/hermes-api:latest .
+# 赫尔墨斯（Hermes）Docker 镜像 — 前后端合一
+# 多阶段构建：Python依赖 + Node前端 → 统一运行时
 
-# ── Stage 1: Builder ──────────────────────────────────────────
-FROM python:3.11-slim-bookworm AS builder
+# ── Stage 1: Python Builder ──────────────────────────────────
+FROM python:3.11-slim-bookworm AS python-builder
 
 WORKDIR /app
 
@@ -11,19 +10,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libpq-dev libffi-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 使用 uv 管理依赖（速度比 pip 快 10-100 倍）
 RUN pip install --no-cache-dir uv
 
-# 先复制依赖文件，利用 Docker 层缓存
 COPY pyproject.toml ./
-
-# 创建占位包以便 uv 解析 pyproject.toml 中的所有依赖
 RUN mkdir -p hermes && touch hermes/__init__.py
-
-# 安装项目及其所有依赖到 site-packages
 RUN uv pip install --system --no-cache .
 
-# ── Stage 2: Runtime ─────────────────────────────────────────
+# ── Stage 2: 前端构建 ────────────────────────────────────────
+FROM node:22-alpine AS frontend-builder
+WORKDIR /frontend
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --frozen-lockfile
+
+COPY frontend/ ./
+RUN npm run build -- --outDir /frontend/dist
+
+# ── Stage 3: Runtime ─────────────────────────────────────────
 FROM python:3.11-slim-bookworm
 
 WORKDIR /app
@@ -32,14 +35,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 从 builder 复制已安装的依赖
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+# 从 python-builder 复制 Python 依赖
+COPY --from=python-builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=python-builder /usr/local/bin /usr/local/bin
 
-# 复制应用源码
+# 复制后端源码
 COPY . .
 
-# 非 root 用户运行
+# 复制前端构建产物
+COPY --from=frontend-builder /frontend/dist /app/frontend-dist
+
 RUN useradd -m -u 1000 hermes && chown -R hermes:hermes /app
 USER hermes
 

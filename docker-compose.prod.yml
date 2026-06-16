@@ -1,11 +1,9 @@
 # 赫尔墨斯（Hermes）生产环境
 # 镜像从阿里云 ACR 拉取，不使用本地 build
-# 用法: docker-compose -f docker-compose.prod.yml up -d
-
-version: "3.8"
+# 用法: docker compose -f docker-compose.prod.yml up -d
 
 services:
-  # ── 应用服务 ──────────────────────────────────────────────
+  # ── 应用服务（前后端合一，单端口 8000） ──────────────────────
   api:
     image: crpi-qs5r9se4bsjpdlz0.cn-shanghai.personal.cr.aliyuncs.com/xuanyuan111/ercm-agent:latest
     ports:

@@ -823,8 +823,8 @@ bash /opt/hermes/scripts/vm-deploy.sh
 每次部署都要输入 ACR 用户名密码比较麻烦，可以写进 `~/.bashrc`：
 
 ```bash
-echo 'export ACR_USER=你的ACR用户名' >> ~/.bashrc
-echo 'export ACR_PASS=你的ACR密码' >> ~/.bashrc
+echo 'export ACR_USERNAME=你的ACR用户名' >> ~/.bashrc
+echo 'export ACR_PASSWORD=你的ACR密码' >> ~/.bashrc
 source ~/.bashrc
 ```
 
@@ -866,7 +866,7 @@ docker inspect hermes-api 2>/dev/null | grep -A1 '"Image"' | tail -1
 - [ ] 虚拟机已安装 Git (§10.1)
 - [ ] 代码已 clone 到 `~/hermes-app` (§10.2)
 - [ ] `.env` 文件已配置（数据库密码、JWT、LLM Key 等）
-- [ ] `ACR_USER` / `ACR_PASS` 已设置（§10.4）
+- [ ] `ACR_USERNAME` / `ACR_PASSWORD` 已设置（§10.4）
 - [ ] 首次运行 `bash vm-deploy.sh`
 - [ ] 确认 `curl http://localhost:8000/health` 返回 `{"status":"ok"}`
 - [ ] （可选）配置 ngrok 暴露端口 8000 到公网（§九）

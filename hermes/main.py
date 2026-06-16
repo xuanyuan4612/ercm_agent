@@ -10,9 +10,12 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import FileResponse, ORJSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from hermes.api.v1.router import api_router
 from hermes.core.config import settings
@@ -178,6 +181,19 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["health"])
     async def health_check():
         return {"status": "ok", "version": settings.APP_VERSION}
+
+    # ── 前端静态文件（仅在 dist 存在时启用） ──────────────────
+    FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend-dist"
+    if FRONTEND_DIR.exists():
+        app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR / "assets")), name="assets")
+
+        @app.get("/{full_path:path}")
+        async def serve_frontend(full_path: str, request: Request):
+            """SPA 回退：非 API 路径返回 index.html"""
+            file_path = FRONTEND_DIR / full_path
+            if file_path.is_file():
+                return FileResponse(file_path)
+            return FileResponse(FRONTEND_DIR / "index.html")
 
     return app
 
