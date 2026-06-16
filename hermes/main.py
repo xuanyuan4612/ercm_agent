@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -49,6 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 初始化 Redis 连接池（可选依赖，仅当配置了 Redis 时才初始化）
     try:
         import redis.asyncio as redis
+
         redis_pool = redis.ConnectionPool.from_url(
             settings.REDIS_CLUSTER_NODES.split(",")[0],
             password=settings.REDIS_PASSWORD.get_secret_value() or None,
@@ -65,6 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 初始化 Elasticsearch 客户端（可选依赖）
     try:
         from elasticsearch import AsyncElasticsearch
+
         es_client = AsyncElasticsearch(settings.ES_HOSTS.split(","))
         app.state.es = es_client
         if await es_client.ping():
@@ -73,13 +74,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.warning("elasticsearch_ping_failed")
             app.state.es = None
     except Exception as e:
-        logger.warning("elasticsearch_unavailable", error=str(e),
-                       message="Elasticsearch 未配置或不可用，全文搜索降级为数据库搜索")
+        logger.warning(
+            "elasticsearch_unavailable", error=str(e), message="Elasticsearch 未配置或不可用，全文搜索降级为数据库搜索"
+        )
         app.state.es = None
 
     # 初始化 MinIO 客户端（可选依赖）
     try:
         from minio import Minio
+
         minio_client = Minio(
             settings.MINIO_ENDPOINT,
             access_key=settings.MINIO_ACCESS_KEY,
@@ -183,17 +186,17 @@ def create_app() -> FastAPI:
         return {"status": "ok", "version": settings.APP_VERSION}
 
     # ── 前端静态文件（仅在 dist 存在时启用） ──────────────────
-    FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend-dist"
-    if FRONTEND_DIR.exists():
-        app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR / "assets")), name="assets")
+    frontend_dir = Path(__file__).resolve().parent.parent / "frontend-dist"
+    if frontend_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(frontend_dir / "assets")), name="assets")
 
         @app.get("/{full_path:path}")
         async def serve_frontend(full_path: str, request: Request):
             """SPA 回退：非 API 路径返回 index.html"""
-            file_path = FRONTEND_DIR / full_path
+            file_path = frontend_dir / full_path
             if file_path.is_file():
                 return FileResponse(file_path)
-            return FileResponse(FRONTEND_DIR / "index.html")
+            return FileResponse(frontend_dir / "index.html")
 
     return app
 
