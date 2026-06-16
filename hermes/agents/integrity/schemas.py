@@ -490,3 +490,73 @@ class EnforcementAgentOutput(BaseModel):
     processing_time_ms: int = Field(...)
     kb_sources: List[str] = Field(default_factory=list)
     retry_count: int = Field(default=0)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 4.6 post-report-agent (报案协助 Agent)
+# ═══════════════════════════════════════════════════════════════
+
+class DispositionPath(str, Enum):
+    """处置路径"""
+    CRIMINAL = "criminal"    # 刑事报案
+    CIVIL = "civil"          # 民事追偿
+    INTERNAL = "internal"    # 内部处罚
+    NONE = "none"            # 不追责
+
+
+class PostReportInput(BaseModel):
+    """报案协助 Agent 输入"""
+    task_id: str = Field(..., description="案件编号")
+    client: Client = Field(..., description="事业部")
+
+    # 上游传递
+    case_conclusion: dict = Field(..., description="案件结论（来自 analysis-agent）")
+    penalty_opinion: Optional[dict] = Field(None, description="追责意见（来自 disposition-agent）")
+    disposition_path: DispositionPath = Field(..., description="处置路径")
+
+    # 证据材料
+    evidence_files: List[str] = Field(default_factory=list, description="证据文件 ID 列表")
+    prosecution_letter_draft: Optional[str] = Field(None, description="已有报案书草稿（如有则补充）")
+
+    context_version: str = Field(default="1.0")
+
+
+class MaterialItem(BaseModel):
+    """报案材料项"""
+    name: str = Field(..., description="材料名称")
+    description: str = Field(..., description="材料说明")
+    required: bool = Field(default=True, description="是否必需")
+    source: str = Field(default="", description="来源：系统导出/人工准备/法务提供")
+    status: str = Field(default="待准备", description="准备状态")
+
+
+class PostReportOutput(BaseModel):
+    """报案协助 Agent 输出"""
+    # 材料清单
+    material_checklist: List[MaterialItem] = Field(default_factory=list, description="报案材料清单")
+
+    # 报案书
+    prosecution_letter: str = Field(default="", description="报案书草稿（或补充内容）")
+
+    # 后续协助建议
+    follow_up_suggestions: List[str] = Field(default_factory=list, description="后续协助建议")
+
+    # 证据补充
+    evidence_supplement_needed: bool = Field(default=False, description="是否需要补充证据")
+    evidence_supplement_items: List[str] = Field(default_factory=list, description="待补充证据项")
+
+    # 司法鉴定
+    forensic_identification_needed: bool = Field(default=False, description="是否需要司法鉴定")
+    estimated_timeline: str = Field(default="", description="预计报案时间线")
+
+    # 律师对接
+    legal_counsel_recommendation: str = Field(default="", description="律师/法务对接建议")
+
+    # 置信度
+    confidence: Confidence = Field(..., description="置信度")
+    confidence_reason: str = Field(default="", description="置信度判断理由")
+
+    # 元数据
+    processing_time_ms: int = Field(default=0)
+    kb_sources: List[str] = Field(default_factory=list)
+    retry_count: int = Field(default=0)

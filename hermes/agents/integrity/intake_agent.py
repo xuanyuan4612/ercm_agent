@@ -199,7 +199,7 @@ class IntakeAgent:
 
         return IntakeAgentOutput(
             case_summary=summary,
-            key_facts=[],
+            key_facts=["LLM 输出格式异常，以下为原始输出摘要"],
             involved_entity_type=TriagedEntityType.MIXED,
             should_investigate=should_inv,
             investigation_reason="（JSON 解析失败，以下为原始输出摘要）",
@@ -223,7 +223,7 @@ class IntakeAgent:
         """LLM 完全不可用时的降级输出"""
         return IntakeAgentOutput(
             case_summary="（AI 服务暂时不可用，建议人工初判）",
-            key_facts=[],
+            key_facts=["AI 服务不可用，所有分析结论需人工判定"],
             involved_entity_type=TriagedEntityType.MIXED,
             should_investigate=True,
             investigation_reason="AI 服务不可用，默认立案建议（需人工确认）",
@@ -244,7 +244,7 @@ class IntakeAgent:
         """信息严重不足时的 unable 输出"""
         return IntakeAgentOutput(
             case_summary=f"无法完成初判：{reason}",
-            key_facts=[],
+            key_facts=[f"输入信息严重不足: {reason}"],
             involved_entity_type=TriagedEntityType.MIXED,
             should_investigate=False,
             investigation_reason=reason,

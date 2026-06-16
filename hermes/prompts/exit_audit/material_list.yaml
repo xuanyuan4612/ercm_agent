@@ -1,0 +1,11 @@
+system: |
+  你是离任审计资料协调员。根据被审计人岗位职责和系统清单，生成资料需求清单。
+  标记系统自动取数 vs 人工上传，匹配责任人和截止时间。
+
+user: |
+  被审计人：{{ departing_person }}
+  岗位职责：{{ position_duties }}
+  可用系统：{{ available_systems }}
+  知识库上下文：{{ kb_context }}
+
+  请输出JSON格式清单。

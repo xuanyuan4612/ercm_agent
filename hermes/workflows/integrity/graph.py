@@ -303,6 +303,40 @@ async def post_report_node(state: IntegrityState) -> IntegrityState:
     """[4.6] 报案后续协助 — post-report-agent"""
     logger.info("post_report_node_start", task_id=state.get("task_id"))
 
+    try:
+        from hermes.agents.integrity.post_report_agent import PostReportAgent
+        from hermes.agents.integrity.schemas import PostReportInput, DispositionPath
+
+        agent = PostReportAgent()
+        case_conclusion = state.get("case_conclusion", {}) or {}
+        penalty = state.get("penalty_opinion", {}) or {}
+
+        # 根据处置类型推断路径
+        disp_type = penalty.get("disposition_type", "internal") if penalty else "internal"
+        disp_path = DispositionPath.CRIMINAL if "刑事" in str(disp_type) else (
+            DispositionPath.CIVIL if "民事" in str(disp_type) else DispositionPath.INTERNAL
+        )
+
+        post_input = PostReportInput(
+            task_id=state.get("task_id", ""),
+            client=state.get("client", "ecovacs"),
+            case_conclusion=case_conclusion,
+            penalty_opinion=penalty,
+            disposition_path=disp_path,
+        )
+        result = await agent.run(post_input)
+        state["prosecution_letter"] = result.model_dump()
+        logger.info("post_report_agent_complete", task_id=state.get("task_id"),
+                    confidence=result.confidence.value if hasattr(result.confidence, 'value') else str(result.confidence))
+    except Exception as e:
+        logger.warning("post_report_agent_unavailable", error=str(e))
+        state["prosecution_letter"] = {
+            "status": "skeleton",
+            "summary": "报案协助由骨架生成（AI Agent 不可用）",
+            "error": str(e),
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
+
     state["current_stage"] = "post_report"
     state["pending_approval_stage"] = "post_report"
     state["stage_history"] = state.get("stage_history", []) + ["post_report"]

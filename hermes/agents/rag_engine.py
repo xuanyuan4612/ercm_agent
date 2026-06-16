@@ -19,19 +19,54 @@ logger = get_logger(__name__)
 
 # 知识库类型到表分区的映射
 KB_TYPE_MAP = {
+    # ── 01 廉洁监察 (Integrity Supervision) ──
     "intake": "intake",
     "investigation": "investigation",
     "analysis": "analysis",
     "disposition": "disposition",
     "enforcement": "enforcement",
-    "risk_monitor": "risk_monitor",
-    "ic_evaluation": "ic_evaluation",
-    "special_audit": "special_audit",
-    "exit_audit": "exit_audit",
-    "trade_secret": "trade_secret",
-    "improvement": "improvement",
-    "behavior_risk": "behavior_risk",
+    # ── 02 风险监控 (Risk Monitoring) ──
+    "risk_rules": "risk_rules",
+    "risk_cases": "risk_cases",
+    "database_schema": "database_schema",
+    "disposition_feedback": "disposition_feedback",
+    # ── 03 内控评价 (Internal Control Evaluation) ──
+    "ic_policy": "ic_policy",
+    "control_matrix": "control_matrix",
+    "audit_plan": "audit_plan",
+    "interview_template": "interview_template",
+    "deficiency_rating": "deficiency_rating",
+    # ── 04 专项审计 (Special Audit) ──
+    "sa_plan": "sa_plan",
+    "sa_history": "sa_history",
+    "audit_workpaper_template": "audit_workpaper_template",
+    "improvement_suggestion": "improvement_suggestion",
+    # ── 05 离任审计 (Exit Audit) ──
+    "ea_plan": "ea_plan",
+    "position_duty": "position_duty",
+    "personal_risk_case": "personal_risk_case",
+    "business_audit_case": "business_audit_case",
+    "behavioral_risk_history": "behavioral_risk_history",
+    # ── 06 商业秘密 (Trade Secrets) ──
+    "trade_secret_policy": "trade_secret_policy",
+    "ip_policy": "ip_policy",
+    "trade_secret_law": "trade_secret_law",
+    "trade_secret_cases": "trade_secret_cases",
+    "historical_secret_review": "historical_secret_review",
+    # ── 07 行为风险 (Behavioral Risk) ──
+    "behavior_policy": "behavior_policy",
+    "employee_lifecycle": "employee_lifecycle",
+    "historical_behavior_analysis": "historical_behavior_analysis",
+    # ── 08 持续改善 (Continuous Improvement) ──
+    "improvement_case": "improvement_case",
+    "rectification_template": "rectification_template",
+    "audit_issue_history": "audit_issue_history",
+    "policy_and_process": "policy_and_process",
+    # ── 共享 (Common) ──
     "common": "common",
+    "law_and_regulation": "law_and_regulation",
+    "kb_integrity_policy": "kb_integrity_policy",
+    "kb_integrity_cases": "kb_integrity_cases",
 }
 
 

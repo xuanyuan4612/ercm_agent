@@ -1,6 +1,6 @@
 # Hermes Agent 详细设计文档索引
 
-> 本目录保存各业务模块的 Agent 详细设计。Agent 设计以 [00-agent-architecture.md](00-agent-architecture.md) 为统一生产约束：模块主控是 Module Graph，不是自主决策型主 Agent；每个模块通过 Module Agent Profile 管理知识范围、工具权限、Prompt、模型路由和输出 schema。
+> 本目录保存各业务模块与共享入口层的 Agent 详细设计。Agent 设计以 [00-agent-architecture.md](00-agent-architecture.md) 为统一生产约束：模块主控是 Module Graph，不是自主决策型主 Agent；每个模块通过 Module Agent Profile 管理知识范围、工具权限、Prompt、模型路由和输出 schema。对话入口 Agent 只负责自然语言交互、意图识别和结构化路由，不拥有业务终态裁决权。
 
 ## 文档索引
 
@@ -15,6 +15,8 @@
 | 06 商业秘密 | [06-trade-secrets-agents.md](06-trade-secrets-agents.md) | 定密预审、制度比对、定密评审、管理报告 |
 | 07 行为风险 | [07-behavioral-risk-agents.md](07-behavioral-risk-agents.md) | 数据质量、异常识别、风险报告、管理报告 |
 | 08 持续改善 | [08-continuous-improvement-agents.md](08-continuous-improvement-agents.md) | 问题录入、计划初审、证据复核、关闭验收、经验沉淀 |
+| 09 对话入口 | [09-conversation-gateway-agent.md](09-conversation-gateway-agent.md) | 用户对话、意图识别、信息追问、动作预览、权限预检、业务路由 |
+| 10 RAG 共享 Agent | [10-rag-shared-agent.md](10-rag-shared-agent.md) | 全模块统一检索、权限过滤、混合召回、重排、引用追溯、上下文组装 |
 
 ## 统一落地原则
 
@@ -22,5 +24,5 @@
 - 每个模块可以有 `Module Agent Profile`，作为 Agent Runtime 的配置入口。
 - 每个关键阶段使用 `Stage Agent`，输出结构化建议和证据引用。
 - 不设置拥有自主状态跳转权的“模块主 Agent”。
+- 共享入口层 `conversation-gateway-agent` 只做对话和路由，确认后的动作仍交由 API、Module Graph、Stage Agent 或 Tool 执行。
 - 高风险动作必须经过 HITL 和 Workflow Runtime 裁决。
-

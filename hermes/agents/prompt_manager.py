@@ -19,8 +19,8 @@ from hermes.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Prompt 模板目录
-PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
+# Prompt 模板目录 (位于 hermes/prompts/ 包根目录下)
+PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
 
 class PromptManager:
