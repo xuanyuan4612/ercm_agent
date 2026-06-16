@@ -11,22 +11,23 @@ import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import bcrypt
 from cryptography.fernet import Fernet
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from hermes.core.config import settings
 
 # ── 密码哈希 ────────────────────────────────────────────────────
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    """使用 bcrypt 哈希密码。"""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    """验证密码与 bcrypt 哈希是否匹配。"""
+    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
 
 
 # ── JWT ────────────────────────────────────────────────────────

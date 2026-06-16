@@ -17,9 +17,9 @@ from hermes.core.exceptions import (
 from hermes.core.logging import get_logger
 from hermes.core.response import success
 from hermes.core.security import sign_approval
+from hermes.db.models.integrity import Case, CaseStage, HumanApproval
 
 logger = get_logger(__name__)
-from hermes.db.models.integrity import Case, CaseStage, HumanApproval
 from hermes.db.session import get_db
 from hermes.schemas.workflow import (
     ApprovalHistoryEntry,

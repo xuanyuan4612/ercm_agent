@@ -18,7 +18,9 @@ from hermes.api.v1.router import api_router
 from hermes.core.config import settings
 from hermes.core.exceptions import HermesError
 from hermes.core.logging import get_logger, setup_logging
+from hermes.core.observability import flush, get_langfuse, shutdown
 from hermes.middleware.audit import AuditMiddleware
+from hermes.middleware.langfuse_trace import LangfuseTraceMiddleware
 from hermes.middleware.rate_limit import RateLimitMiddleware
 
 logger = get_logger(__name__)
@@ -29,6 +31,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """应用生命周期管理"""
     setup_logging()
     logger.info("hermes_starting", version=settings.APP_VERSION, env=settings.ENV)
+
+    # 初始化 Langfuse（可选依赖，优雅降级）
+    try:
+        lf = get_langfuse()
+        if lf:
+            lf.auth_check()
+            logger.info("langfuse_connected", host=settings.LANGFUSE_BASE_URL)
+        else:
+            logger.info("langfuse_not_configured", message="Langfuse 未配置，分布式追踪功能关闭")
+    except Exception as e:
+        logger.warning("langfuse_unavailable", error=str(e), message="Langfuse 不可用，分布式追踪功能降级")
 
     # 初始化 Redis 连接池（可选依赖，仅当配置了 Redis 时才初始化）
     try:
@@ -85,6 +98,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 优雅关闭连接
     logger.info("hermes_stopping")
 
+    # 刷新 Langfuse 缓冲区
+    try:
+        await shutdown()
+    except Exception as e:
+        logger.warning("langfuse_shutdown_error", error=str(e))
+
     if app.state.redis:
         try:
             await app.state.redis.aclose()
@@ -116,9 +135,11 @@ def create_app() -> FastAPI:
     # ── 中间件注册（顺序重要：内→外 = 请求处理顺序） ──────────
     # 1. 审计日志（最内层：需要 trace_id 贯穿整个请求）
     app.add_middleware(AuditMiddleware)
-    # 2. 速率限制
+    # 2. Langfuse 分布式追踪（包含审计 trace_id，自动继承上游上下文）
+    app.add_middleware(LangfuseTraceMiddleware)
+    # 3. 速率限制
     app.add_middleware(RateLimitMiddleware)
-    # 3. CORS（最外层）
+    # 4. CORS（最外层）
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,

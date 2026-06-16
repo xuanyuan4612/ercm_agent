@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from hermes.api.v1 import (
     admin,
+    agents,
     approval,
     auth,
     cases,
@@ -16,6 +17,8 @@ from hermes.api.v1 import (
 
 api_router = APIRouter()
 
+# Agent 模块 Profile
+api_router.include_router(agents.router, tags=["agents"])
 # 认证
 api_router.include_router(auth.router, tags=["auth"])
 # 案件管理

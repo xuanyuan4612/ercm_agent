@@ -101,10 +101,26 @@ class LLMAdapter:
         if not self._using_backup:
             self._primary_failures = 0
 
-    async def invoke(self, messages: list[dict], **kwargs: Any) -> str:
-        """同步调用 LLM（非流式），返回完整响应文本。"""
+    async def invoke(
+        self, messages: list[dict], *, trace_name: str | None = None, **kwargs: Any
+    ) -> str:
+        """同步调用 LLM（非流式），返回完整响应文本。
+
+        Args:
+            messages: 消息列表 [{"role": "user", "content": "..."}]
+            trace_name: Langfuse 追踪名称（如 "intake_analysis"），
+                       自动创建 Langfuse generation span。
+        """
         try:
             llm = self.active
+            # 注入 Langfuse callback handler（若已配置）
+            callbacks = kwargs.pop("callbacks", [])
+            handler = self._get_trace_handler(trace_name)
+            if handler:
+                callbacks.append(handler)
+            if callbacks:
+                kwargs["config"] = {"callbacks": callbacks}
+
             response = await llm.ainvoke(
                 _format_messages(messages),
                 **kwargs,
@@ -116,10 +132,24 @@ class LLMAdapter:
             logger.error("llm_invoke_failed", error=str(e))
             raise AIServiceUnavailableError(detail=str(e))
 
-    async def stream(self, messages: list[dict], **kwargs: Any) -> AsyncIterator[str]:
-        """流式调用 LLM，逐步返回 token。"""
+    async def stream(
+        self, messages: list[dict], *, trace_name: str | None = None, **kwargs: Any
+    ) -> AsyncIterator[str]:
+        """流式调用 LLM，逐步返回 token。
+
+        Args:
+            messages: 消息列表
+            trace_name: Langfuse 追踪名称
+        """
         try:
             llm = self.active
+            callbacks = kwargs.pop("callbacks", [])
+            handler = self._get_trace_handler(trace_name)
+            if handler:
+                callbacks.append(handler)
+            if callbacks:
+                kwargs["config"] = {"callbacks": callbacks}
+
             async for chunk in llm.astream(
                 _format_messages(messages),
                 **kwargs,
@@ -132,6 +162,16 @@ class LLMAdapter:
             self._on_failure()
             logger.error("llm_stream_failed", error=str(e))
             raise AIServiceUnavailableError(detail=str(e))
+
+    @staticmethod
+    def _get_trace_handler(trace_name: str | None = None):
+        """获取 Langfuse callback handler（若已配置）。"""
+        from hermes.core.observability import get_langfuse_handler, get_trace_id
+
+        handler = get_langfuse_handler(
+            trace_id=get_trace_id(),
+        )
+        return handler
 
 
 def _format_messages(messages: list[dict]) -> list[tuple[str, str]]:

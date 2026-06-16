@@ -42,8 +42,12 @@ async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
 
     # 检查账号锁定
     now = datetime.now(UTC)
-    if user.locked_until and user.locked_until.replace(tzinfo=UTC) > now:
-        raise AccountLockedError(detail=f"账号已锁定，请{settings.ACCOUNT_LOCK_MINUTES}分钟后再试")
+    if user.locked_until:
+        locked = user.locked_until
+        if locked.tzinfo is None:
+            locked = locked.replace(tzinfo=UTC)
+        if locked > now:
+            raise AccountLockedError(detail=f"账号已锁定，请{settings.ACCOUNT_LOCK_MINUTES}分钟后再试")
 
     if not verify_password(request.password, user.hashed_password):
         user.login_attempts = (user.login_attempts or 0) + 1

@@ -180,6 +180,7 @@ class Settings(BaseSettings):
     # ── 可观测性 ───────────────────────────────────────────────
     LANGFUSE_PUBLIC_KEY: str = ""
     LANGFUSE_SECRET_KEY: SecretStr = SecretStr("")
+    LANGFUSE_BASE_URL: str = "https://cloud.langfuse.com"
     JAEGER_HOST: str = "localhost"
     JAEGER_PORT: int = 6831
     SENTRY_DSN: str = ""
@@ -192,7 +193,8 @@ class Settings(BaseSettings):
         import base64
 
         try:
-            key = base64.b64decode(v)
+            # Fernet uses URL-safe base64; accept both standard (+/) and URL-safe (-_)
+            key = base64.b64decode(v, altchars=b"-_", validate=True)
             if len(key) != 32:
                 raise ValueError("ENCRYPTION_KEY must decode to 32 bytes")
         except Exception:

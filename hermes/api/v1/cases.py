@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import and_, func, or_, select, text
@@ -78,7 +78,7 @@ def _generate_task_id(source: str) -> str:
         "wechat": "GZ", "agent": "ZN",
     }
     prefix = prefix_map.get(source, "XX")
-    today = datetime.utcnow().strftime("%Y%m%d")
+    today = datetime.now(UTC).strftime("%Y%m%d")
     # 简化实现：使用 uuid4 的后6位作为序号
     seq = uuid.uuid4().hex[:4].upper()
     return f"{prefix}{today}{seq}"

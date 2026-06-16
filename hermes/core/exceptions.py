@@ -42,8 +42,8 @@ class HermesError(Exception):
 # ── 通用错误 (00) ──────────────────────────────────────────────
 
 class BadRequestError(HermesError):
-    def __init__(self, message: str = "请求参数错误", detail: str | None = None):
-        super().__init__(code=40000, message=message, detail=detail, status_code=400)
+    def __init__(self, message: str = "请求参数错误", detail: str | None = None, code: int = 40000):
+        super().__init__(code=code, message=message, detail=detail, status_code=400)
 
 
 class UnauthorizedError(HermesError):
@@ -72,13 +72,13 @@ class CrossClientForbiddenError(HermesError):
 
 
 class NotFoundError(HermesError):
-    def __init__(self, message: str = "资源不存在", detail: str | None = None):
-        super().__init__(code=40400, message=message, detail=detail, status_code=404)
+    def __init__(self, message: str = "资源不存在", detail: str | None = None, code: int = 40400):
+        super().__init__(code=code, message=message, detail=detail, status_code=404)
 
 
 class ConflictError(HermesError):
-    def __init__(self, message: str = "资源冲突", detail: str | None = None):
-        super().__init__(code=40900, message=message, detail=detail, status_code=409)
+    def __init__(self, message: str = "资源冲突", detail: str | None = None, code: int = 40900):
+        super().__init__(code=code, message=message, detail=detail, status_code=409)
 
 
 class FileTooLargeError(HermesError):

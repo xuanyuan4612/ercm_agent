@@ -50,7 +50,10 @@ async def get_current_user(
     if user.locked_until:
         from datetime import UTC, datetime
         now = datetime.now(UTC)
-        if user.locked_until.replace(tzinfo=UTC) > now:
+        locked = user.locked_until
+        if locked.tzinfo is None:
+            locked = locked.replace(tzinfo=UTC)
+        if locked > now:
             raise AccountLockedError()
 
     # 将用户信息存入 request.state 供后续使用

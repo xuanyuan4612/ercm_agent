@@ -24,6 +24,7 @@ from hermes.agents.llm_adapter import llm_adapter
 from hermes.agents.profiles import ModuleAgentProfile
 from hermes.agents.rag_engine import RAGEngine
 from hermes.core.logging import get_logger
+from hermes.core.observability import observe
 
 logger = get_logger(__name__)
 
@@ -94,6 +95,7 @@ class BaseStageAgent(ABC):
         """
         ...
 
+    @observe(as_type="retriever", name="agent.knowledge_search")
     async def _search_kb(
         self,
         db_session,
@@ -101,7 +103,7 @@ class BaseStageAgent(ABC):
         kb_types: Optional[list[str]] = None,
         top_k: int = 5,
     ) -> list[dict]:
-        """知识库检索"""
+        """知识库检索（Langfuse 追踪：retriever span）"""
         if self._rag_engine is None:
             self._rag_engine = RAGEngine(db_session)
         kb = kb_types or self.kb_types
@@ -120,6 +122,7 @@ class BaseStageAgent(ABC):
         kb = kb_types or self.kb_types
         return await self._rag_engine.get_retrieval_context(query, kb, top_k)
 
+    @observe(as_type="generation", name="agent.llm_invoke")
     async def _invoke_llm(
         self,
         messages: list[dict],
@@ -127,7 +130,7 @@ class BaseStageAgent(ABC):
         max_tokens: int = 4096,
         retries: int = 2,
     ) -> str:
-        """调用 LLM（含重试和降级）"""
+        """调用 LLM（含重试和降级，Langfuse 追踪：generation span）"""
         last_error: Optional[Exception] = None
         for attempt in range(retries + 1):
             try:
@@ -135,6 +138,7 @@ class BaseStageAgent(ABC):
                     messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    trace_name=f"{self.agent_id}.{self.stage}",
                 )
                 return response
             except Exception as e:

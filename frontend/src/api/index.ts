@@ -135,6 +135,16 @@ export const knowledgeApi = {
     get<PaginatedResponse<Record<string, unknown>>['data']>('/knowledge-bases', params),
 }
 
+// ═══ AI Agent 模块管理 ═══
+import type { ModuleAgentProfile } from '@/types'
+
+export const agentsApi = {
+  /** 获取所有模块 Agent Profile 列表 */
+  list: () => get<ModuleAgentProfile[]>('/agents/profiles'),
+  /** 获取单个模块 Agent Profile */
+  get: (module: string) => get<ModuleAgentProfile | null>(`/agents/profiles/${module}`),
+}
+
 // ═══ 管理员 ═══
 export const adminApi = {
   users: (params?: Record<string, unknown>) =>

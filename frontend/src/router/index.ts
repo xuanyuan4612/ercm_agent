@@ -46,6 +46,12 @@ const router = createRouter({
           meta: { title: '知识库' },
         },
         {
+          path: 'agents',
+          name: 'Agents',
+          component: () => import('@/views/AgentsView.vue'),
+          meta: { title: 'AI Agent' },
+        },
+        {
           path: 'admin',
           name: 'Admin',
           component: () => import('@/views/AdminView.vue'),
