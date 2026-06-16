@@ -35,7 +35,7 @@ jobs:
           python-version: "3.11"
 
       - name: 安装依赖
-        run: uv sync --dev
+        run: uv sync --extra dev
 
       - name: Ruff 检查
         run: uv run ruff check hermes/ tests/
@@ -71,7 +71,7 @@ jobs:
           python-version: "3.11"
 
       - name: 安装依赖
-        run: uv sync --dev
+        run: uv sync --extra dev
 
       - name: 运行单元测试
         env:
