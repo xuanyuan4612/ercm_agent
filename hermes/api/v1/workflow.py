@@ -25,6 +25,7 @@ from hermes.schemas.workflow import (
     WorkflowResumeRequest,
     WorkflowStatusResponse,
 )
+from hermes.services.case_service import CaseService
 
 logger = get_logger(__name__)
 
@@ -60,15 +61,24 @@ async def start_workflow(
     case.status = "investigating"
     case.current_stage = "intake"
 
-    # 创建阶段记录
-    stage = CaseStage(
-        case_id=case.id,
-        stage_name="intake",
-        stage_order=1,
-        status="pending_approval",
-        started_at=datetime.now(UTC),
-    )
-    db.add(stage)
+    # 预先创建所有阶段的 CaseStage 记录，供后台 LangGraph 节点持久化 AI 产出
+    stages_config = [
+        ("intake", 1),
+        ("investigation", 2),
+        ("analysis", 3),
+        ("disposition", 4),
+        ("enforcement", 5),
+        ("post_report", 6),
+    ]
+    now = datetime.now(UTC)
+    for stage_name, stage_order in stages_config:
+        db.add(CaseStage(
+            case_id=case.id,
+            stage_name=stage_name,
+            stage_order=stage_order,
+            status="pending_approval" if stage_name == "intake" else "pending",
+            started_at=now if stage_name == "intake" else None,
+        ))
     await db.flush()
 
     # LangGraph 工作流启动（当前为骨架实现，Celery/RabbitMQ 调度待接入）
@@ -134,15 +144,23 @@ async def resume_workflow(
 
     if next_stage:
         case.current_stage = next_stage
-        order = stage_order.get(next_stage, 0)
-        stage = CaseStage(
-            case_id=case.id,
-            stage_name=next_stage,
-            stage_order=order,
-            status="pending_approval",
-            started_at=datetime.now(UTC),
-        )
-        db.add(stage)
+        # 查找预创建的 CaseStage 记录（含 LangGraph 后台已持久化的 AI 产出），激活为待守门
+        svc = CaseService(db)
+        existing = await svc.get_case_stage(case.id, next_stage)
+        if existing:
+            existing.status = "pending_approval"
+            if not existing.started_at:
+                existing.started_at = datetime.now(UTC)
+        else:
+            # 兜底：创建新记录（旧数据兼容）
+            order = stage_order.get(next_stage, 0)
+            db.add(CaseStage(
+                case_id=case.id,
+                stage_name=next_stage,
+                stage_order=order,
+                status="pending_approval",
+                started_at=datetime.now(UTC),
+            ))
     else:
         case.status = "closed"
 

@@ -145,6 +145,55 @@ export const agentsApi = {
   get: (module: string) => get<ModuleAgentProfile | null>(`/agents/profiles/${module}`),
 }
 
+// ═══ 风险监控 ═══
+import type {
+  RiskRule,
+  RiskAlertBrief,
+  RiskAlertDetail,
+  RiskScanTask,
+  RuleIteration,
+  RiskPushRecord,
+} from '@/types'
+
+export const riskMonitorApi = {
+  // 规则管理
+  rules: {
+    list: (params?: Record<string, unknown>) =>
+      get<PaginatedResponse<RiskRule>['data']>('/risk-monitor/rules', params),
+    get: (id: string) =>
+      get<{ rule: RiskRule; iterations: RuleIteration[] }>(`/risk-monitor/rules/${id}`),
+    create: (data: Record<string, unknown>) =>
+      post<RiskRule>('/risk-monitor/rules', data),
+    update: (id: string, data: Record<string, unknown>) =>
+      put<RiskRule>(`/risk-monitor/rules/${id}`, data),
+    approve: (id: string, action: string, comment?: string) =>
+      post<RiskRule>(`/risk-monitor/rules/${id}/approve`, { action, comment }),
+    delete: (id: string) =>
+      del<{ message: string }>(`/risk-monitor/rules/${id}`),
+  },
+  // 扫描任务
+  scans: {
+    list: (params?: Record<string, unknown>) =>
+      get<PaginatedResponse<RiskScanTask>['data']>('/risk-monitor/scans', params),
+    trigger: (data?: Record<string, unknown>) =>
+      post<{ message: string; rule_count: number; rules: Array<{ id: string; rule_code: string; level3_scene: string }> }>(
+        '/risk-monitor/scans',
+        data
+      ),
+  },
+  // 预警管理
+  alerts: {
+    list: (params?: Record<string, unknown>) =>
+      get<PaginatedResponse<RiskAlertBrief>['data']>('/risk-monitor/alerts', params),
+    get: (id: string) =>
+      get<RiskAlertDetail>(`/risk-monitor/alerts/${id}`),
+    approve: (id: string, action: string, comment?: string, modifications?: Record<string, unknown>) =>
+      post<RiskAlertDetail>(`/risk-monitor/alerts/${id}/approve`, { action, comment, modifications: modifications ? JSON.stringify(modifications) : undefined }),
+    pushes: (id: string) =>
+      get<RiskPushRecord[]>(`/risk-monitor/alerts/${id}/pushes`),
+  },
+}
+
 // ═══ 管理员 ═══
 export const adminApi = {
   users: (params?: Record<string, unknown>) =>

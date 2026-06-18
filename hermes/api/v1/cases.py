@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from hermes.api.dependencies import CurrentUser, check_client_access
 from hermes.core.exceptions import (
@@ -187,7 +188,9 @@ async def get_case(
 ):
     """查询案件详情"""
     result = await db.execute(
-        select(Case).where(Case.id == case_id, Case.is_deleted == False)
+        select(Case)
+        .options(selectinload(Case.documents))
+        .where(Case.id == case_id, Case.is_deleted == False)
     )
     case = result.scalar_one_or_none()
     if not case:
@@ -206,7 +209,9 @@ async def update_case(
 ):
     """更新案件（仅 status=pending 时允许）"""
     result = await db.execute(
-        select(Case).where(Case.id == case_id, Case.is_deleted == False)
+        select(Case)
+        .options(selectinload(Case.documents))
+        .where(Case.id == case_id, Case.is_deleted == False)
     )
     case = result.scalar_one_or_none()
     if not case:

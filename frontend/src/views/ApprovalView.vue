@@ -32,11 +32,26 @@
         class="alert-block"
       />
 
-      <!-- AI 分析结果 -->
-      <el-card class="output-card" shadow="never">
+      <!-- AI 生成中 -->
+      <el-card v-if="isGenerating" class="output-card generating-card" shadow="never">
+        <template #header>
+          <div class="card-header-title">
+            <el-icon :size="16" class="is-loading"><Loading /></el-icon> AI 正在生成分析结果...
+          </div>
+        </template>
+        <div class="generating-hint">
+          <el-progress :percentage="generatingProgress" :stroke-width="6" :show-text="false" />
+          <p class="generating-text">{{ pending.ai_output?.message || 'AI 正在分析案件材料，请稍候...' }}</p>
+          <p class="generating-sub">页面会自动刷新，无需手动操作</p>
+        </div>
+      </el-card>
+
+      <!-- AI 分析结果（生成完成后显示） -->
+      <el-card v-if="!isGenerating" class="output-card" shadow="never">
         <template #header>
           <div class="card-header-title">
             <el-icon :size="16"><Cpu /></el-icon> AI 分析结果
+            <el-tag v-if="pending.ai_output?.status === 'generating'" size="small" type="warning" class="header-tag">生成中</el-tag>
           </div>
         </template>
         <div class="output-fields">
@@ -58,6 +73,62 @@
                 <span>{{ String(value) }}</span>
               </template>
             </div>
+          </div>
+        </div>
+      </el-card>
+
+      <!-- 划词调整：碳基选中 AI 输出段落，提供修改指令重新生成 -->
+      <el-card class="regenerate-card" shadow="never">
+        <template #header>
+          <div class="card-header-title">
+            <el-icon :size="16"><Edit /></el-icon> 划词调整
+            <span class="card-header-hint">选中原文段落，输入修改指令让 AI 重新生成</span>
+          </div>
+        </template>
+        <div class="regenerate-form">
+          <div class="regenerate-row">
+            <div class="regenerate-col">
+              <div class="regenerate-label">选中原文</div>
+              <el-input
+                v-model="selectedText"
+                type="textarea"
+                :rows="3"
+                placeholder="从上方 AI 分析结果中复制需要修改的文本段落..."
+              />
+            </div>
+            <div class="regenerate-col">
+              <div class="regenerate-label">修改指令</div>
+              <el-input
+                v-model="instruction"
+                type="textarea"
+                :rows="3"
+                placeholder="例如：将风险等级改为低风险、补充供应商名称、修正金额范围..."
+              />
+            </div>
+          </div>
+          <div class="regenerate-actions">
+            <el-button
+              type="primary"
+              :icon="Refresh"
+              :loading="regenerating"
+              :disabled="!selectedText.trim() || !instruction.trim()"
+              @click="doRegenerate"
+            >
+              重新生成
+            </el-button>
+            <el-button
+              v-if="regeneratedText"
+              :icon="Check"
+              type="success"
+              plain
+              @click="applyRegenerated"
+            >
+              采用结果
+            </el-button>
+          </div>
+          <div v-if="regeneratedText" class="regenerate-result">
+            <div class="regenerate-label">重新生成结果</div>
+            <div class="regenerate-content">{{ regeneratedText }}</div>
           </div>
         </div>
       </el-card>
@@ -159,11 +230,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
-  ArrowLeft, Check, Close, Collection, Cpu, Edit, Finished, Timer,
+  ArrowLeft, Check, Close, Collection, Cpu, Document, Edit, Finished, Loading, Refresh, Timer,
 } from '@element-plus/icons-vue'
 import { approvalApi } from '@/api'
 import { STAGE_LABELS } from '@/types'
@@ -181,10 +252,29 @@ const action = ref<string>('')
 const comment = ref('')
 const selectedText = ref('')
 const instruction = ref('')
+const regenerating = ref(false)
+const regeneratedText = ref('')
+const generatingProgress = ref(0)
+let _pollTimer: ReturnType<typeof setInterval> | null = null
+
+// 判断 AI 是否正在生成中
+const isGenerating = computed(() => {
+  const status = pending.value?.ai_output?.status
+  return status === 'pending' || status === 'generating'
+})
+
+// 判断显示字段是否为空（AI 没有实际产出）
+const hasRealOutput = computed(() => {
+  const output = pending.value?.ai_output || {}
+  const skip = ['status', 'sections', 'error', 'generated_at', 'a2a_targets', 'message']
+  return Object.keys(output).some(k => !skip.includes(k) && output[k] !== undefined && output[k] !== null && output[k] !== '')
+})
 
 const displayFields = computed(() => {
   const output = pending.value?.ai_output || {}
-  const skip = ['status', 'sections', 'error', 'generated_at', 'a2a_targets']
+  const skip = isGenerating.value
+    ? ['status', 'error', 'generated_at', 'a2a_targets']  // 生成中时显示 message
+    : ['status', 'sections', 'error', 'generated_at', 'a2a_targets', 'message']
   const result: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(output)) {
     if (!skip.includes(key) && value !== undefined && value !== null) {
@@ -243,9 +333,68 @@ async function fetchApproval() {
     ])
     if (pendingRes.status === 'fulfilled') pending.value = pendingRes.value.data
     if (historyRes.status === 'fulfilled') approvalHistory.value = historyRes.value.data
+
+    // 如果 AI 正在生成中，启动轮询
+    if (isGenerating.value) {
+      startPolling()
+    } else {
+      stopPolling()
+    }
   } finally {
     loading.value = false
   }
+}
+
+function startPolling() {
+  if (_pollTimer) return
+  generatingProgress.value = 0
+  _pollTimer = setInterval(async () => {
+    generatingProgress.value = Math.min(generatingProgress.value + 5, 90)
+    try {
+      const res = await approvalApi.pending(caseId)
+      pending.value = res.data
+      if (!isGenerating.value) {
+        stopPolling()
+      }
+    } catch { /* ignore poll errors */ }
+  }, 3000)
+}
+
+function stopPolling() {
+  if (_pollTimer) {
+    clearInterval(_pollTimer)
+    _pollTimer = null
+  }
+  generatingProgress.value = 100
+}
+
+async function doRegenerate() {
+  if (!selectedText.value.trim() || !instruction.value.trim()) return
+  regenerating.value = true
+  regeneratedText.value = ''
+  try {
+    const res = await approvalApi.regenerate(
+      caseId, pending.value!.stage, selectedText.value, instruction.value
+    )
+    regeneratedText.value = res.data?.regenerated_text || ''
+    if (regeneratedText.value) {
+      ElMessage.success('重新生成完成')
+    } else {
+      ElMessage.warning('重新生成返回空结果')
+    }
+  } catch {
+    ElMessage.error('重新生成失败，AI 服务可能不可用')
+  } finally {
+    regenerating.value = false
+  }
+}
+
+function applyRegenerated() {
+  if (!regeneratedText.value) return
+  // 将再生文本填入选中原文区域，方便对照
+  selectedText.value = regeneratedText.value
+  regeneratedText.value = ''
+  ElMessage.success('已采用重新生成结果，可继续守门决策')
 }
 
 async function submitApproval() {
@@ -263,6 +412,7 @@ async function submitApproval() {
 }
 
 onMounted(fetchApproval)
+onUnmounted(stopPolling)
 </script>
 
 <style scoped>
@@ -295,6 +445,13 @@ onMounted(fetchApproval)
   color: #303133;
 }
 .alert-block { margin-bottom: 16px; border-radius: 8px; }
+
+/* ── AI 生成中 ── */
+.generating-card { border: 1px dashed #E6A23C; background: #FDF6EC; }
+.generating-hint { text-align: center; padding: 24px 16px; }
+.generating-text { margin: 16px 0 8px; font-size: 15px; color: #E6A23C; font-weight: 500; }
+.generating-sub { margin: 0; font-size: 12px; color: #C0C4CC; }
+.header-tag { margin-left: 8px; }
 
 /* ── AI 输出字段 ── */
 .output-fields { display: flex; flex-direction: column; gap: 0; }
@@ -354,4 +511,38 @@ onMounted(fetchApproval)
 .history-comment { color: #606266; font-size: 13px; margin-top: 4px; }
 
 .text-muted { color: #909399; }
+
+/* ── 划词调整 ── */
+.regenerate-card { margin-bottom: 16px; border-radius: 8px; }
+.card-header-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: #909399;
+  margin-left: 8px;
+}
+.regenerate-form { display: flex; flex-direction: column; gap: 12px; }
+.regenerate-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.regenerate-col { display: flex; flex-direction: column; gap: 4px; }
+.regenerate-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #606266;
+}
+.regenerate-actions { display: flex; gap: 8px; }
+.regenerate-result {
+  background: #F0F9EB;
+  border: 1px solid #E1F3D8;
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+.regenerate-content {
+  white-space: pre-wrap;
+  line-height: 1.6;
+  color: #303133;
+  font-size: 14px;
+}
 </style>

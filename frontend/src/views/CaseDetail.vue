@@ -91,12 +91,12 @@
           v-for="item in stageHistory"
           :key="item.stage_name + (item.started_at || '')"
           :timestamp="item.started_at || ''"
-          :type="item.status === 'approved' ? 'success' : item.status === 'rejected' ? 'danger' : 'primary'"
+          :type="item.status === 'approved' ? 'success' : item.status === 'modified' ? 'warning' : item.status === 'rejected' ? 'danger' : 'primary'"
           :hollow="item.status === 'running'"
         >
           <span class="timeline-stage">{{ stageLabel(item.stage_name) }}</span>
-          <el-tag size="small" :type="item.status === 'approved' ? 'success' : item.status === 'rejected' ? 'danger' : 'info'" effect="light">
-            {{ item.status === 'approved' ? '已通过' : item.status === 'rejected' ? '已驳回' : item.status === 'pending_approval' ? '待守门' : item.status === 'running' ? '进行中' : item.status }}
+          <el-tag size="small" :type="item.status === 'approved' ? 'success' : item.status === 'modified' ? 'warning' : item.status === 'rejected' ? 'danger' : 'info'" effect="light">
+            {{ item.status === 'approved' ? '已通过' : item.status === 'modified' ? '修改通过' : item.status === 'rejected' ? '已驳回' : item.status === 'pending_approval' ? '待守门' : item.status === 'running' ? '进行中' : item.status }}
           </el-tag>
         </el-timeline-item>
       </el-timeline>
@@ -188,6 +188,7 @@ function stageStatusDesc(key: string): string {
   if (histories.length === 0) return ''
   const latest = histories[histories.length - 1]
   if (latest.status === 'approved') return '✓ 通过'
+  if (latest.status === 'modified') return '✎ 修改通过'
   if (latest.status === 'rejected') return '✗ 驳回'
   if (latest.status === 'pending_approval') return '⏳ 守门中'
   if (latest.status === 'running') return '⚙ 运行中'
@@ -198,7 +199,7 @@ function stepStatus(key: string) {
   const histories = stageHistory.value.filter((h) => h.stage_name === key)
   if (histories.length === 0) return 'wait'
   const latest = histories[histories.length - 1]
-  if (latest.status === 'approved') return 'success'
+  if (latest.status === 'approved' || latest.status === 'modified') return 'success'
   if (latest.status === 'rejected') return 'error'
   if (latest.status === 'running') return 'process'
   return 'wait'

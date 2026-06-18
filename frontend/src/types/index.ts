@@ -344,6 +344,186 @@ export const ROUTING_POLICY_LABELS: Record<string, string> = {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// 风险监控模块类型
+// ═══════════════════════════════════════════════════════════════
+
+export interface RiskRule {
+  id: string
+  rule_code: string
+  business_unit?: string
+  channel?: string
+  format?: string
+  department?: string
+  position?: string
+  personnel_info?: string
+  business_cycle?: string
+  level1_scene?: string
+  level2_scene?: string
+  level3_scene: string
+  sql_statement: string
+  risk_level: string
+  threshold?: number
+  monitor_frequency: string
+  monitor_business_unit?: string
+  use_external_data: boolean
+  status: string
+  version: number
+  reviewed_by?: string
+  reviewed_at?: string
+  created_by?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export interface RuleIteration {
+  id: string
+  iteration_type: string
+  old_sql?: string
+  new_sql?: string
+  old_threshold?: number
+  new_threshold?: number
+  reason: string
+  operator_id: string
+  created_at?: string
+}
+
+export interface RiskAlertBrief {
+  id: string
+  alert_code: string
+  rule_id?: string
+  analysis_subject_id?: string
+  business_unit?: string
+  alert_time?: string
+  risk_type: string
+  risk_level: string
+  severity?: string
+  status: string
+  impact_amount?: number
+  created_at?: string
+}
+
+export interface RiskAnalysisSubject {
+  id: string
+  subject_code: string
+  subject_name: string
+  subject_type: string
+  contact_info?: Record<string, unknown>
+  merge_source_ids?: Record<string, unknown>
+  risk_behavior?: string
+  risk_business?: string
+  impact_scope?: string
+  involved_amount?: number
+  analysis_report_path?: string
+}
+
+export interface RiskPushRecord {
+  id: string
+  target_module: string
+  target_record_id?: string
+  push_payload?: Record<string, unknown>
+  push_status: string
+  callback_status: string
+  callback_detail?: Record<string, unknown>
+  push_at?: string
+  callback_at?: string
+  created_at?: string
+}
+
+export interface RiskAlertDetail extends RiskAlertBrief {
+  alert_data?: Record<string, unknown>
+  widespread?: string
+  impact_degree?: string
+  handling_suggestion?: string
+  reviewed_by?: string
+  reviewed_at?: string
+  rule?: RiskRule
+  analysis_subject?: RiskAnalysisSubject
+  push_records?: RiskPushRecord[]
+}
+
+export interface RiskScanTask {
+  scan_id: string
+  scan_time?: string
+  alert_count: number
+  statuses: string[]
+  status: string
+}
+
+// 风险监控阶段映射
+export const RISK_STAGE_LABELS: Record<string, string> = {
+  risk_rule: '风险规则清单生成',
+  risk_scan: '异常数据扫描',
+  anomaly_filter: 'AI 初核异常',
+  entity_merge: '主体合并',
+  risk_classify: '风险定性',
+  result_push: '结果推送',
+  feedback_loop: '处置回流',
+}
+
+export const RISK_STAGE_ORDER: Record<string, number> = {
+  risk_rule: 1,
+  risk_scan: 2,
+  anomaly_filter: 3,
+  entity_merge: 4,
+  risk_classify: 5,
+  result_push: 6,
+  feedback_loop: 7,
+}
+
+export const RISK_RULE_STATUS_LABELS: Record<string, string> = {
+  draft: '草稿',
+  pending_review: '待审核',
+  active: '生效',
+  rejected: '已驳回',
+  deprecated: '已废弃',
+}
+
+export const RISK_RULE_STATUS_TYPES: Record<string, string> = {
+  draft: 'info',
+  pending_review: 'warning',
+  active: 'success',
+  rejected: 'danger',
+  deprecated: '',
+}
+
+export const RISK_LEVEL_LABELS: Record<string, string> = {
+  '高': '高风险',
+  '中': '中风险',
+  '低': '低风险',
+}
+
+export const ALERT_STATUS_LABELS: Record<string, string> = {
+  pending: '待处理',
+  reviewing: '审核中',
+  approved: '已确认',
+  rejected: '已驳回',
+  pushed: '已推送',
+}
+
+export const ALERT_STATUS_TYPES: Record<string, string> = {
+  pending: 'info',
+  reviewing: 'warning',
+  approved: 'success',
+  rejected: 'danger',
+  pushed: '',
+}
+
+export const PUSH_MODULE_LABELS: Record<string, string> = {
+  integrity_supervision: '廉洁监察',
+  internal_control_evaluation: '内控评价',
+  trade_secrets: '商业秘密',
+  behavioral_risk: '行为风险',
+  continuous_improvement: '持续改善',
+}
+
+export const FREQUENCY_LABELS: Record<string, string> = {
+  daily: '每天',
+  weekly: '每周',
+  monthly: '每月',
+  realtime: '实时',
+}
+
+// ═══════════════════════════════════════════════════════════════
 // 工作流阶段映射
 // ═══════════════════════════════════════════════════════════════
 

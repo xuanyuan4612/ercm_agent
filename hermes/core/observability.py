@@ -135,18 +135,23 @@ def get_session_id() -> str | None:
 
 # ── HTTP 请求追踪 ────────────────────────────────────────────────
 
-async def create_http_trace(
+def start_http_span(
     method: str,
     path: str,
     user_id: str | None = None,
     user_role: str | None = None,
     client_ip: str | None = None,
     user_agent: str | None = None,
-) -> dict[str, Any] | None:
-    """为 HTTP 请求创建 Langfuse trace。
+):
+    """为 HTTP 请求创建 Langfuse span（返回 context manager，需用 with 进入）。
+
+    用法:
+        with start_http_span("GET", "/api/v1/cases", user_id="admin") as span:
+            response = await handle_request()
+            span.update(output={"status_code": response.status_code})
 
     Returns:
-        包含 trace 信息的字典，或 None（Langfuse 未配置时）
+        _AgnosticContextManager，或 None（Langfuse 未配置时）
     """
     client = get_langfuse()
     if client is None:
@@ -155,7 +160,7 @@ async def create_http_trace(
     trace_id = str(uuid.uuid4())
     set_trace_context(trace_id)
 
-    # 使用 propagate_attributes 将用户/请求信息附加到后续 span
+    # 将用户/请求信息附加到后续 span
     propagate_attributes(
         user_id=user_id or "anonymous",
         session_id=_current_session_id.get(),
@@ -168,9 +173,8 @@ async def create_http_trace(
         tags=["hermes", "api"],
     )
 
-    # 使用 start_as_current_observation 创建顶层 trace（span type）
     trace_name = f"HTTP {method} {path}"
-    client.start_as_current_observation(
+    return client.start_as_current_observation(
         as_type="span",
         name=trace_name,
         input={
@@ -179,37 +183,6 @@ async def create_http_trace(
             "user_id": user_id,
             "client_ip": client_ip,
         },
-    )
-
-    return {
-        "trace_id": trace_id,
-        "trace_name": trace_name,
-    }
-
-
-async def finalize_http_trace(
-    trace_info: dict[str, Any] | None,
-    status_code: int,
-    response_body: Any = None,
-    error: str | None = None,
-) -> None:
-    """完成 HTTP 请求 trace。
-
-    Args:
-        trace_info: create_http_trace 返回的 trace 信息
-        status_code: HTTP 状态码
-        response_body: 响应体（可选）
-        error: 错误信息（可选）
-    """
-    client = get_langfuse()
-    if client is None or trace_info is None:
-        return
-
-    level = "ERROR" if error else "DEFAULT"
-    client.update_current_span(
-        output={"status_code": status_code, "response": response_body},
-        level=level,
-        status_message=error,
     )
 
 
@@ -234,22 +207,18 @@ async def shutdown() -> None:
 # ── Agent 推理追踪 ───────────────────────────────────────────────
 
 
-async def create_agent_observation(
+def start_agent_span(
     agent_name: str,
     stage: str,
     input_data: dict[str, Any],
     trace_id: str | None = None,
-) -> Any:
-    """为 Agent 推理创建子 span。
+):
+    """为 Agent 推理创建子 span（返回 context manager，需用 with 进入）。
 
-    Args:
-        agent_name: Agent 名称
-        stage: 工作流阶段
-        input_data: Agent 输入
-        trace_id: 关联的 trace ID
-
-    Returns:
-        当前 observation 上下文
+    用法:
+        with start_agent_span("intake-agent", "intake", input_data) as span:
+            result = await agent.run()
+            span.update(output=result.model_dump())
     """
     client = get_langfuse()
     if client is None:
@@ -257,28 +226,70 @@ async def create_agent_observation(
 
     obs_name = f"agent.{agent_name}.{stage}"
     return client.start_as_current_observation(
-        as_type="agent",
+        as_type="span",
         name=obs_name,
         input=input_data,
     )
 
 
-async def finalize_agent_observation(
-    observation: Any,
-    output: dict[str, Any],
-    error: str | None = None,
-) -> None:
-    """完成 Agent 推理 span。"""
-    client = get_langfuse()
-    if client is None or observation is None:
-        return
+# ── 评分（人工反馈 / 评估）───────────────────────────────────────
 
-    level = "ERROR" if error else "DEFAULT"
-    client.update_current_span(
-        output=output,
-        level=level,
-        status_message=error,
-    )
+
+def tag_current_span(tags: list[str] | None = None, metadata: dict[str, Any] | None = None) -> None:
+    """为当前活跃 span 添加 tag 或 metadata（用于在 API 端点中补充上下文）。
+
+    用法（在 request handler 中调用）:
+        tag_current_span(tags=["client:ecovacs"], metadata={"case_id": str(case.id)})
+    """
+    client = get_langfuse()
+    if client is None:
+        return
+    try:
+        update_kwargs: dict[str, Any] = {}
+        if tags:
+            update_kwargs["metadata"] = {"tags": tags}
+        if metadata:
+            existing = update_kwargs.get("metadata", {})
+            existing.update(metadata)
+            update_kwargs["metadata"] = existing
+        if update_kwargs:
+            client.update_current_span(**update_kwargs)
+    except Exception as e:
+        logger.warning("langfuse_tag_span_failed", error=str(e))
+
+
+def create_score(
+    trace_id: str,
+    name: str,
+    value: float | int,
+    data_type: str = "NUMERIC",
+    comment: str | None = None,
+) -> None:
+    """创建 Langfuse score（人工反馈或自动评估）。
+
+    用法:
+        create_score(trace_id, "human-approval", 1, data_type="BOOLEAN", comment="通过")
+
+    Args:
+        trace_id: 关联的 trace ID
+        name: 评分名称（小写+连字符，如 "human-approval", "user-thumbs"）
+        value: 评分值（NUMERIC: 0-1 float, BOOLEAN: 0/1, CATEGORICAL: string）
+        data_type: 数据类型 ("NUMERIC" | "BOOLEAN" | "CATEGORICAL")
+        comment: 可选评语
+    """
+    client = get_langfuse()
+    if client is None:
+        return
+    try:
+        client.create_score(
+            trace_id=trace_id,
+            name=name,
+            value=value,
+            data_type=data_type,
+            comment=comment,
+        )
+    except Exception as e:
+        logger.warning("langfuse_score_failed", name=name, error=str(e))
 
 
 # ── 重新导出常用函数 ────────────────────────────────────────────
@@ -293,10 +304,10 @@ __all__ = [
     "set_trace_context",
     "get_trace_id",
     "get_session_id",
-    "create_http_trace",
-    "finalize_http_trace",
-    "create_agent_observation",
-    "finalize_agent_observation",
+    "start_http_span",
+    "start_agent_span",
+    "tag_current_span",
+    "create_score",
     "flush",
     "shutdown",
 ]

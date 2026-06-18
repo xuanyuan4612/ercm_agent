@@ -14,6 +14,7 @@
 
       <el-menu
         :default-active="route.path"
+        :default-openeds="openSubmenus"
         router
         :collapse="isCollapsed"
         background-color="#304156"
@@ -21,18 +22,27 @@
         active-text-color="#409EFF"
         class="side-menu"
       >
-        <el-menu-item index="/cases">
-          <el-icon><Folder /></el-icon>
-          <template #title>案件管理</template>
-        </el-menu-item>
-        <el-menu-item index="/cases/create">
-          <el-icon><Plus /></el-icon>
-          <template #title>创建案件</template>
-        </el-menu-item>
+        <el-sub-menu index="/integrity">
+          <template #title>
+            <el-icon><Search /></el-icon>
+            <span>廉洁监察</span>
+          </template>
+          <el-menu-item index="/cases">案件管理</el-menu-item>
+          <el-menu-item index="/cases/create">创建案件</el-menu-item>
+        </el-sub-menu>
         <el-menu-item index="/agents">
           <el-icon><Cpu /></el-icon>
           <template #title>AI Agent</template>
         </el-menu-item>
+        <el-sub-menu index="/risk-monitor">
+          <template #title>
+            <el-icon><WarningFilled /></el-icon>
+            <span>风险监控</span>
+          </template>
+          <el-menu-item index="/risk-monitor/rules">规则管理</el-menu-item>
+          <el-menu-item index="/risk-monitor/scans">扫描任务</el-menu-item>
+          <el-menu-item index="/risk-monitor/alerts">预警列表</el-menu-item>
+        </el-sub-menu>
         <el-menu-item index="/knowledge">
           <el-icon><Collection /></el-icon>
           <template #title>知识库检索</template>
@@ -119,11 +129,19 @@ import {
   HomeFilled,
   Search,
   SwitchButton,
+  WarningFilled,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const authStore = useAuthStore()
 const isCollapsed = ref(false)
+
+const openSubmenus = computed(() => {
+  const opened: string[] = []
+  if (route.path.startsWith('/cases')) opened.push('/integrity')
+  if (route.path.startsWith('/risk-monitor')) opened.push('/risk-monitor')
+  return opened
+})
 
 const roleLabel = computed(() => {
   const labels: Record<string, string> = {

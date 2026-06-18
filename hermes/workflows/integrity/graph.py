@@ -33,13 +33,17 @@ Redis Checkpointer：
 from __future__ import annotations
 
 import asyncio
+import uuid as uuid_mod
 from datetime import UTC, datetime
 from typing import Any, Literal, TypedDict
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
+from sqlalchemy import select
 
 from hermes.core.logging import get_logger
+from hermes.core.observability import observe
+from hermes.db.session import async_session_factory
 
 logger = get_logger(__name__)
 
@@ -100,6 +104,55 @@ STAGE_CONFIG = {
 }
 
 
+async def _persist_stage_output(
+    case_id: str, stage_name: str, ai_output: dict[str, Any]
+) -> None:
+    """将 AI 产出物持久化到 CaseStage 表，供守门审批接口读取。
+
+    查找匹配 case_id + stage_name 的最新 CaseStage（不限制 status），
+    更新其 ai_output 并设置 started_at（若尚未设置）。
+    """
+    try:
+        from hermes.db.models.integrity import CaseStage
+
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(CaseStage)
+                .where(
+                    CaseStage.case_id == uuid_mod.UUID(case_id),
+                    CaseStage.stage_name == stage_name,
+                )
+                .order_by(CaseStage.started_at.desc().nullslast())
+                .limit(1)
+            )
+            stage_record = result.scalar_one_or_none()
+            if stage_record:
+                stage_record.ai_output = ai_output
+                if not stage_record.started_at:
+                    stage_record.started_at = datetime.now(UTC)
+                await db.commit()
+                logger.info(
+                    "stage_output_persisted",
+                    case_id=case_id,
+                    stage=stage_name,
+                    keys=list(ai_output.keys()),
+                )
+            else:
+                logger.warning(
+                    "stage_record_not_found_for_persist",
+                    case_id=case_id,
+                    stage=stage_name,
+                )
+    except Exception as e:
+        logger.error(
+            "persist_stage_output_failed",
+            case_id=case_id,
+            stage=stage_name,
+            error=str(e),
+        )
+
+
+@observe(as_type="span", name="workflow.intake")
 async def intake_node(state: IntegrityState) -> IntegrityState:
     """
     [4.1] 材料初判与分流 — intake-agent
@@ -126,6 +179,9 @@ async def intake_node(state: IntegrityState) -> IntegrityState:
         logger.info("intake_agent_complete", task_id=state.get("task_id"),
                     should_investigate=result.should_investigate,
                     confidence=result.confidence.value if hasattr(result.confidence, 'value') else str(result.confidence))
+        # 持久化 AI 产出到 DB，供守门审批接口读取
+        if state.get("case_id"):
+            await _persist_stage_output(state["case_id"], "intake", state["intake_report"])
     except Exception as e:
         logger.warning("intake_agent_unavailable", error=str(e),
                        message="IntakeAgent 不可用，使用骨架默认值")
@@ -138,6 +194,9 @@ async def intake_node(state: IntegrityState) -> IntegrityState:
             "error": str(e),
             "generated_at": datetime.now(UTC).isoformat(),
         }
+        # 骨架输出也持久化到 DB
+        if state.get("case_id"):
+            await _persist_stage_output(state["case_id"], "intake", state["intake_report"])
 
     state["current_stage"] = "intake"
     state["pending_approval_stage"] = "intake"
@@ -148,6 +207,7 @@ async def intake_node(state: IntegrityState) -> IntegrityState:
     return state
 
 
+@observe(as_type="span", name="workflow.investigation")
 async def investigation_node(state: IntegrityState) -> IntegrityState:
     """[4.2] 调查方案生成 — investigation-agent"""
     logger.info("investigation_node_start", task_id=state.get("task_id"))
@@ -173,6 +233,8 @@ async def investigation_node(state: IntegrityState) -> IntegrityState:
         state["investigation_plan"] = result.model_dump()
         logger.info("investigation_agent_complete", task_id=state.get("task_id"),
                     confidence=result.confidence.value if hasattr(result.confidence, 'value') else str(result.confidence))
+        if state.get("case_id"):
+            await _persist_stage_output(state["case_id"], "investigation", state["investigation_plan"])
     except Exception as e:
         logger.warning("investigation_agent_unavailable", error=str(e))
         state["investigation_plan"] = {
@@ -182,6 +244,8 @@ async def investigation_node(state: IntegrityState) -> IntegrityState:
             "sections": ["调查方向", "访谈计划", "证据清单", "时间安排"],
             "generated_at": datetime.now(UTC).isoformat(),
         }
+        if state.get("case_id"):
+            await _persist_stage_output(state["case_id"], "investigation", state["investigation_plan"])
 
     state["current_stage"] = "investigation"
     state["pending_approval_stage"] = "investigation"
@@ -189,6 +253,7 @@ async def investigation_node(state: IntegrityState) -> IntegrityState:
     return state
 
 
+@observe(as_type="span", name="workflow.analysis")
 async def analysis_node(state: IntegrityState) -> IntegrityState:
     """[4.3] 多维分析与报告撰写 — analysis-agent"""
     logger.info("analysis_node_start", task_id=state.get("task_id"))
@@ -210,6 +275,8 @@ async def analysis_node(state: IntegrityState) -> IntegrityState:
         result = await agent.run(analysis_input)
         state["case_conclusion"] = result.model_dump()
         logger.info("analysis_agent_complete", task_id=state.get("task_id"))
+        if state.get("case_id"):
+            await _persist_stage_output(state["case_id"], "analysis", state["case_conclusion"])
     except Exception as e:
         logger.warning("analysis_agent_unavailable", error=str(e))
         state["case_conclusion"] = {
@@ -219,6 +286,8 @@ async def analysis_node(state: IntegrityState) -> IntegrityState:
             "sections": ["案件概述", "调查过程", "事实认定", "证据链", "结论与建议"],
             "generated_at": datetime.now(UTC).isoformat(),
         }
+        if state.get("case_id"):
+            await _persist_stage_output(state["case_id"], "analysis", state["case_conclusion"])
 
     state["current_stage"] = "analysis"
     state["pending_approval_stage"] = "analysis"
@@ -226,6 +295,7 @@ async def analysis_node(state: IntegrityState) -> IntegrityState:
     return state
 
 
+@observe(as_type="span", name="workflow.disposition")
 async def disposition_node(state: IntegrityState) -> IntegrityState:
     """[4.4] 处置分流与处罚确定 — disposition-agent"""
     logger.info("disposition_node_start", task_id=state.get("task_id"))
@@ -244,6 +314,8 @@ async def disposition_node(state: IntegrityState) -> IntegrityState:
         result = await agent.run(disp_input)
         state["penalty_opinion"] = result.model_dump()
         logger.info("disposition_agent_complete", task_id=state.get("task_id"))
+        if state.get("case_id"):
+            await _persist_stage_output(state["case_id"], "disposition", state["penalty_opinion"])
     except Exception as e:
         logger.warning("disposition_agent_unavailable", error=str(e))
         state["penalty_opinion"] = {
@@ -253,6 +325,8 @@ async def disposition_node(state: IntegrityState) -> IntegrityState:
             "error": str(e),
             "generated_at": datetime.now(UTC).isoformat(),
         }
+        if state.get("case_id"):
+            await _persist_stage_output(state["case_id"], "disposition", state["penalty_opinion"])
 
     state["current_stage"] = "disposition"
     state["pending_approval_stage"] = "disposition"
@@ -260,6 +334,7 @@ async def disposition_node(state: IntegrityState) -> IntegrityState:
     return state
 
 
+@observe(as_type="span", name="workflow.enforcement")
 async def enforcement_node(state: IntegrityState) -> IntegrityState:
     """[4.5] 处罚执行与跟踪 — enforcement-agent"""
     logger.info("enforcement_node_start", task_id=state.get("task_id"))
@@ -281,6 +356,8 @@ async def enforcement_node(state: IntegrityState) -> IntegrityState:
         state["a2a_task_ids"] = result.a2a_task_ids if hasattr(result, 'a2a_task_ids') else {}
         logger.info("enforcement_agent_complete", task_id=state.get("task_id"),
                     a2a_tasks=len(state["a2a_task_ids"]))
+        if state.get("case_id"):
+            await _persist_stage_output(state["case_id"], "enforcement", state["penalty_announcement"])
     except Exception as e:
         logger.warning("enforcement_agent_unavailable", error=str(e))
         state["penalty_announcement"] = {
@@ -291,6 +368,8 @@ async def enforcement_node(state: IntegrityState) -> IntegrityState:
             "generated_at": datetime.now(UTC).isoformat(),
         }
         state["a2a_task_ids"] = {}
+        if state.get("case_id"):
+            await _persist_stage_output(state["case_id"], "enforcement", state["penalty_announcement"])
 
     state["current_stage"] = "enforcement"
     state["pending_approval_stage"] = "enforcement"
@@ -298,6 +377,7 @@ async def enforcement_node(state: IntegrityState) -> IntegrityState:
     return state
 
 
+@observe(as_type="span", name="workflow.post_report")
 async def post_report_node(state: IntegrityState) -> IntegrityState:
     """[4.6] 报案后续协助 — post-report-agent"""
     logger.info("post_report_node_start", task_id=state.get("task_id"))
@@ -327,6 +407,8 @@ async def post_report_node(state: IntegrityState) -> IntegrityState:
         state["prosecution_letter"] = result.model_dump()
         logger.info("post_report_agent_complete", task_id=state.get("task_id"),
                     confidence=result.confidence.value if hasattr(result.confidence, 'value') else str(result.confidence))
+        if state.get("case_id"):
+            await _persist_stage_output(state["case_id"], "post_report", state["prosecution_letter"])
     except Exception as e:
         logger.warning("post_report_agent_unavailable", error=str(e))
         state["prosecution_letter"] = {
@@ -335,6 +417,8 @@ async def post_report_node(state: IntegrityState) -> IntegrityState:
             "error": str(e),
             "generated_at": datetime.now(UTC).isoformat(),
         }
+        if state.get("case_id"):
+            await _persist_stage_output(state["case_id"], "post_report", state["prosecution_letter"])
 
     state["current_stage"] = "post_report"
     state["pending_approval_stage"] = "post_report"

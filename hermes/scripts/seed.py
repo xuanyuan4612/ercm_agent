@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import secrets
-import string
 import sys
 from pathlib import Path
 
@@ -37,12 +35,8 @@ DEFAULT_ADMIN_DEPARTMENT = os.getenv("ADMIN_DEPARTMENT", "风控部")
 
 
 def _generate_password() -> str:
-    """生成随机密码（12 位），如果环境变量未设置。"""
-    env_password = os.getenv("ADMIN_PASSWORD")
-    if env_password:
-        return env_password
-    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
-    return "".join(secrets.choice(alphabet) for _ in range(16))
+    """获取管理员密码，优先环境变量，默认 'admin'。"""
+    return os.getenv("ADMIN_PASSWORD", "admin")
 
 
 async def seed() -> None:

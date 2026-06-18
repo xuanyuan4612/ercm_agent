@@ -52,6 +52,47 @@ const router = createRouter({
           meta: { title: 'AI Agent' },
         },
         {
+          path: 'risk-monitor',
+          children: [
+            {
+              path: 'rules',
+              name: 'RiskRules',
+              component: () => import('@/views/risk-monitoring/RuleList.vue'),
+              meta: { title: '规则管理' },
+            },
+            {
+              path: 'rules/create',
+              name: 'RiskRuleCreate',
+              component: () => import('@/views/risk-monitoring/RuleCreate.vue'),
+              meta: { title: '创建规则' },
+            },
+            {
+              path: 'rules/:id/approval',
+              name: 'RiskRuleApproval',
+              component: () => import('@/views/risk-monitoring/RuleApproval.vue'),
+              meta: { title: '规则审批' },
+            },
+            {
+              path: 'scans',
+              name: 'RiskScans',
+              component: () => import('@/views/risk-monitoring/ScanDashboard.vue'),
+              meta: { title: '扫描任务' },
+            },
+            {
+              path: 'alerts',
+              name: 'RiskAlerts',
+              component: () => import('@/views/risk-monitoring/AlertList.vue'),
+              meta: { title: '预警列表' },
+            },
+            {
+              path: 'alerts/:id',
+              name: 'RiskAlertDetail',
+              component: () => import('@/views/risk-monitoring/AlertDetail.vue'),
+              meta: { title: '预警详情' },
+            },
+          ],
+        },
+        {
           path: 'admin',
           name: 'Admin',
           component: () => import('@/views/AdminView.vue'),

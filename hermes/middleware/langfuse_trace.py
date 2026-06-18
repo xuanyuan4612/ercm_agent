@@ -1,13 +1,12 @@
 """
 Langfuse 分布式追踪中间件
 
-为每个 HTTP 请求自动创建 Langfuse trace，包含：
-- 请求元数据（method, path, client IP, user agent）
-- 用户信息（user_id, role）
-- 响应状态码和耗时
-- 错误详情
+为每个 HTTP 请求自动创建 Langfuse trace span，使用 context manager
+（with）正确激活 span。所有下游 span（LLM 调用、agent 推理等）
+自动挂载到当前 trace 下，形成完整的调用链。
 
-所有 span 自动挂载到当前 trace，形成完整的调用链。
+Langfuse v4 SDK 要求 start_as_current_observation 返回的 context manager
+必须用 with 进入，否则 span 不会被激活。
 """
 
 from __future__ import annotations
@@ -21,10 +20,9 @@ from starlette.types import ASGIApp
 
 from hermes.core.logging import get_logger
 from hermes.core.observability import (
-    create_http_trace,
-    finalize_http_trace,
     get_langfuse,
     set_trace_context,
+    start_http_span,
 )
 
 logger = get_logger(__name__)
@@ -42,8 +40,9 @@ _SKIP_TRACE_PREFIXES = (
 class LangfuseTraceMiddleware(BaseHTTPMiddleware):
     """Langfuse HTTP 请求追踪中间件。
 
-    每个 HTTP 请求自动创建一个 Langfuse trace，
+    每个 HTTP 请求自动创建一个 Langfuse span，
     将请求上下文信息（用户、IP、路径等）注入 span 元数据。
+    span 通过 context manager 正确激活，下游所有操作自动挂载为此 span 的子节点。
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -63,14 +62,13 @@ class LangfuseTraceMiddleware(BaseHTTPMiddleware):
         client_ip = _get_client_ip(request)
         user_agent = request.headers.get("user-agent", "")
 
-        # 获取或创建 session_id（使用 trace_id 作为 session_id 的近似）
+        # 获取或创建 session_id
         trace_id = getattr(request.state, "trace_id", None)
         if trace_id:
             set_trace_context(trace_id)
 
-        # 创建 HTTP trace
-        start_time = time.monotonic()
-        trace_info = await create_http_trace(
+        # 创建 span（context manager），若不配置则跳过
+        span_ctx = start_http_span(
             method=request.method,
             path=request.url.path,
             user_id=str(user_id) if user_id else None,
@@ -78,33 +76,40 @@ class LangfuseTraceMiddleware(BaseHTTPMiddleware):
             client_ip=client_ip,
             user_agent=user_agent,
         )
+        if span_ctx is None:
+            return await call_next(request)
 
-        error: str | None = None
-        response = None
-        try:
-            response = await call_next(request)
-        except Exception as exc:
-            error = str(exc)
-            status_code = 500
-            raise
-        else:
-            status_code = response.status_code
-        finally:
-            int((time.monotonic() - start_time) * 1000)
+        start_time = time.monotonic()
 
-            # 完成 trace
-            await finalize_http_trace(
-                trace_info=trace_info,
-                status_code=status_code,
-                response_body=None,  # 不记录完整响应体以保护数据
-                error=error,
-            )
+        # with 进入 span context —— 这才是激活 span 的关键步骤
+        with span_ctx as span:
+            error: str | None = None
+            status_code = 200
+            try:
+                response = await call_next(request)
+                status_code = response.status_code
+            except Exception as exc:
+                error = str(exc)
+                status_code = 500
+                span.update(
+                    level="ERROR",
+                    status_message=error[:1000],
+                )
+                raise
+            finally:
+                duration_ms = int((time.monotonic() - start_time) * 1000)
+                span.update(
+                    output={
+                        "status_code": status_code,
+                        "duration_ms": duration_ms,
+                    },
+                )
 
             # 在响应头中返回 trace 信息
-            if trace_info and response is not None:
-                response.headers["X-Trace-ID"] = trace_info.get("trace_id", "")
+            if span.trace_id:
+                response.headers["X-Trace-ID"] = span.trace_id
 
-        return response
+            return response
 
 
 def _get_client_ip(request: Request) -> str:

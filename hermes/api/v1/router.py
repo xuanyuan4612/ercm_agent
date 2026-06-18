@@ -10,6 +10,7 @@ from hermes.api.v1 import (
     cases,
     documents,
     knowledge,
+    risk_monitor,
     webhooks,
     websocket,
     workflow,
@@ -31,6 +32,8 @@ api_router.include_router(approval.router, tags=["approval"])
 api_router.include_router(documents.router, tags=["documents"])
 # 知识库
 api_router.include_router(knowledge.router, tags=["knowledge"])
+# 风险监控
+api_router.include_router(risk_monitor.router, tags=["risk-monitor"])
 # 外部 Webhook
 api_router.include_router(webhooks.router, tags=["webhooks"])
 # 管理后台

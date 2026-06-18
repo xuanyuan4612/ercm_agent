@@ -108,8 +108,16 @@ class IntakeAgent:
             },
         )
 
-        # 3. 解析 System/User 段落
+        # 3. 解析 System/User 段落（附加 JSON 输出格式定义）
+        output_schema = _build_output_format(IntakeAgentOutput)
         messages = _parse_prompt_to_messages(prompt_text)
+        messages[-1]["content"] += (
+            "\n\n【严格输出格式 — 直接输出下面的JSON，不要修改字段名】\n"
+            "重要：整个响应应该是一段纯JSON，以 { 开头、以 } 结束。\n"
+            "不要将JSON包裹在markdown代码块中，不要添加额外说明文字。\n"
+            "每个字段的值必须是你在JSON中直接填写的，而不是将整个输出放入某个字段。\n\n"
+            f"需要的JSON格式（用实际分析内容替换示例值）：\n{output_schema}"
+        )
 
         # 4. 调用 LLM
         retry_count = 0
@@ -151,33 +159,28 @@ class IntakeAgent:
         # 尝试 JSON 解析
         try:
             data = _extract_json(response)
-            return IntakeAgentOutput(
-                case_summary=data.get("case_summary", "（摘要生成失败）"),
-                key_facts=data.get("key_facts", []),
-                involved_entity_type=TriagedEntityType(data.get("involved_entity_type", "混合")),
-                should_investigate=data.get("should_investigate", True),
-                investigation_reason=data.get("investigation_reason", ""),
-                should_transfer=data.get("should_transfer", False),
-                transfer_target=TransferTarget(data.get("transfer_target", "不转交")),
-                transfer_reason=data.get("transfer_reason"),
-                is_hr_related=data.get("is_hr_related", False),
-                risk_level=_safe_risk_level(data.get("risk_level")),
-                estimated_amount_range=data.get("estimated_amount_range"),
-                urgency=_safe_urgency(data.get("urgency")),
-                confidence=_safe_confidence(data.get("confidence")),
-                confidence_reason=data.get("confidence_reason", ""),
-                uncertainty_factors=data.get("uncertainty_factors", []),
-                missing_information=data.get("missing_information", []),
-                legal_references=_parse_legal_refs(data.get("legal_references", [])),
-                suggested_next_steps=data.get("suggested_next_steps", []),
-                suggested_interview_targets=data.get("suggested_interview_targets"),
-                processing_time_ms=processing_time_ms,
-                kb_sources=data.get("kb_sources", []),
-                retry_count=retry_count,
-                downstream_context=_build_downstream_context(data, task_id),
-            )
+            return _build_output_from_data(data, task_id, processing_time_ms, retry_count)
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.info("intake_direct_parse_failed", error=str(e), task_id=task_id)
         except Exception as parse_err:
             logger.warning("intake_json_parse_failed", error=str(parse_err), task_id=task_id)
+            # 如果 Pydantic 验证失败，尝试从嵌套的 case_summary 中提取
+            try:
+                data = _extract_json(response)
+                # 检测 LLM 是否将整个输出嵌套在 case_summary 字段内
+                if isinstance(data.get("case_summary"), dict):
+                    logger.info("intake_detected_nested_output, extracting from case_summary")
+                    nested = data["case_summary"]
+                    return _build_output_from_data(nested, task_id, processing_time_ms, retry_count)
+                # 检测是否嵌套在顶层对象的第一个字段中
+                for key in ("case_summary", "case_review_report", "analysis"):
+                    if isinstance(data.get(key), dict):
+                        nested = data[key]
+                        if any(f in nested for f in ("should_investigate", "risk_level")):
+                            logger.info(f"intake_detected_nested_{key}, extracting")
+                            return _build_output_from_data(nested, task_id, processing_time_ms, retry_count)
+            except Exception:
+                pass
             # 降级为自由文本解析
             return self._parse_free_text(response, task_id, processing_time_ms, retry_count)
 
@@ -426,6 +429,138 @@ def _parse_legal_refs(refs: list) -> list[LegalReference]:
                 relevance=r.get("relevance", ""),
             ))
     return result
+
+
+# 元数据字段，跳过输出格式说明（由 Agent 代码自动填充）
+skip_fields = {
+    "processing_time_ms", "kb_sources", "retry_count", "downstream_context",
+    "intake_report_doc_id", "investigation_report_doc_id",
+    "analysis_report_doc_id", "disposition_report_doc_id",
+    "enforcement_report_doc_id", "post_report_doc_id",
+}
+
+
+def _build_output_format(model_class: type) -> str:
+    """根据 Pydantic 模型生成 LLM 输出的 JSON 格式说明"""
+    schema = model_class.model_json_schema()
+    props = schema.get("properties", {})
+    required = set(schema.get("required", []))
+
+    # 手动定义枚举映射，确保 LLM 输出精确的枚举值
+    enum_values = {
+        "involved_entity_type": '必须是以下之一: "员工", "供应商", "经销商", "混合"',
+        "risk_level": '必须是以下之一: "高", "中", "低"',
+        "urgency": '必须是以下之一: "紧急", "一般", "低"',
+        "confidence": '必须是以下之一: "high", "medium", "low", "unable"',
+        "transfer_target": '必须是以下之一: "龟宝(HR-A2A)", "辛顿平台任务中心", "不转交"',
+    }
+
+    lines = []
+    for name in props:
+        if name in skip_fields:
+            continue
+        prop = props[name]
+        desc = prop.get("description", "")
+        is_req = "必填" if name in required else "可选"
+
+        if name in enum_values:
+            desc = enum_values[name]
+        elif "type" in prop:
+            field_type = prop.get("type", "string")
+            if field_type == "array":
+                items = prop.get("items", {})
+                desc = f"[{items.get('type', 'string')}数组] {desc}"
+            elif field_type == "boolean":
+                desc = f"[true/false] {desc}"
+            elif field_type == "object":
+                desc = f"[对象] {desc}"
+            elif field_type == "string":
+                desc = f"[字符串] {desc}"
+
+        example = _get_example_value(name, prop)
+        lines.append(f'  "{name}": {example},  // {is_req}, {desc}')
+
+    return "{\n" + "\n".join(lines) + "\n}"
+
+
+def _get_example_value(name: str, prop: dict) -> str:
+    """根据字段类型生成示例值"""
+    field_type = prop.get("type", "string")
+    any_of = prop.get("anyOf", [])
+    enum_vals = None
+    for t in any_of:
+        if t.get("type") == "string" and "enum" in t:
+            enum_vals = t["enum"]
+    if not enum_vals and "enum" in prop:
+        enum_vals = prop["enum"]
+
+    if enum_vals:
+        return json.dumps(enum_vals[0])
+    if field_type == "boolean":
+        return "true"
+    if field_type == "integer" or field_type == "number":
+        return "0"
+    if field_type == "array":
+        items = prop.get("items", {})
+        item_type = items.get("type", "string")
+        if item_type == "object":
+            return "[{}]"
+        return '["示例1", "示例2"]'
+    if field_type == "object":
+        return "{}"
+    return '"此处填写"'
+
+
+def _build_output_from_data(data: dict, task_id: str, processing_time_ms: int, retry_count: int) -> IntakeAgentOutput:
+    """从解析后的 JSON 数据构建 IntakeAgentOutput, 对非法枚举值进行容错处理"""
+    return IntakeAgentOutput(
+        case_summary=data.get("case_summary", "（摘要生成失败）"),
+        key_facts=_safe_list(data.get("key_facts"), min_len=1, fallback=["LLM 未提供关键事实"]),
+        involved_entity_type=_safe_enum(data.get("involved_entity_type"), TriagedEntityType, TriagedEntityType.MIXED),
+        should_investigate=bool(data.get("should_investigate", True)),
+        investigation_reason=str(data.get("investigation_reason", "")),
+        should_transfer=bool(data.get("should_transfer", False)),
+        transfer_target=_safe_enum(data.get("transfer_target"), TransferTarget, TransferTarget.NONE),
+        transfer_reason=data.get("transfer_reason"),
+        is_hr_related=bool(data.get("is_hr_related", False)),
+        risk_level=_safe_risk_level(data.get("risk_level")),
+        estimated_amount_range=data.get("estimated_amount_range"),
+        urgency=_safe_urgency(data.get("urgency")),
+        confidence=_safe_confidence(data.get("confidence")),
+        confidence_reason=str(data.get("confidence_reason", "")),
+        uncertainty_factors=_safe_list(data.get("uncertainty_factors")),
+        missing_information=_safe_list(data.get("missing_information")),
+        legal_references=_parse_legal_refs(data.get("legal_references", [])),
+        suggested_next_steps=_safe_list(data.get("suggested_next_steps")),
+        suggested_interview_targets=_safe_list(data.get("suggested_interview_targets")),
+        processing_time_ms=processing_time_ms,
+        kb_sources=_safe_list(data.get("kb_sources")),
+        retry_count=retry_count,
+        downstream_context=_build_downstream_context(data, task_id),
+    )
+
+
+def _safe_list(value: Any, min_len: int = 0, fallback: list | None = None) -> list:
+    """安全转换为列表，处理 LLM 返回字符串而非数组的情况"""
+    if isinstance(value, list):
+        result = list(value)
+    elif isinstance(value, str) and value:
+        result = [value]
+    else:
+        result = []
+    if min_len > 0 and len(result) < min_len:
+        return fallback or [f"LLM 未提供足够数据 (需要至少{min_len}项)"]
+    return result
+
+
+def _safe_enum(value: Any, enum_cls: type, default: Any) -> Any:
+    """安全转换枚举值，忽略非法值"""
+    if value is None:
+        return default
+    try:
+        return enum_cls(str(value))
+    except ValueError:
+        return default
 
 
 async def _sleep_backoff(attempt: int) -> None:

@@ -603,7 +603,7 @@ sudo sysctl -w vm.max_map_count=262144
 
 ## 九、ngrok 内网穿透（让公网也能访问）
 
-ngrok 可以给虚拟机和 Windows 上的服务生成**公网临时域名**，适合：
+前后端已全部部署在虚拟机上（单容器，端口 8000），ngrok 可以给虚拟机的服务生成**公网临时域名**，适合：
 - 给外部人员演示系统
 - 接收第三方 Webhook 回调（如企业微信、钉钉）
 - 不在公司内网时远程调试
@@ -629,25 +629,20 @@ ngrok version
 ngrok config add-authtoken 3FDnC58wRKxO3xdhibFVpftnqF6_61MyG3sqyxqg7L8QvmRyT
 ```
 
-### 9.3 配置 ngrok
+### 9.3 配置并启动 ngrok
 
-创建配置文件，同时暴露多个端口：
+前后端已经合一，只需暴露一个 8000 端口。把下面的 authtoken 替换成你自己的：
 
 ```bash
-mkdir -p ~/.ngrok2
 cat > ~/.ngrok2/ngrok.yml << 'EOF'
 version: "3"
 agent:
   authtoken: 3FDnC58wRKxO3xdhibFVpftnqF6_61MyG3sqyxqg7L8QvmRyT
 tunnels:
-  # 后端 API（Windows 上的服务，通过虚拟机宿主机 IP 转发）
-  api:
+  # 赫尔墨斯系统（前后端合一）
+  hermes:
     proto: http
-    addr: http://192.168.204.2:8000
-  # 前端
-  frontend:
-    proto: http
-    addr: http://192.168.204.2:5173
+    addr: http://localhost:8000
   # Kibana
   kibana:
     proto: http
@@ -656,80 +651,43 @@ tunnels:
   rabbitmq:
     proto: http
     addr: http://localhost:15672
-EOF
-```
-
-> **注意**：后端（`:8000`）和前端（`:5173`）跑在 Windows 上，在虚拟机里要用 Windows 在 NAT 网络中的 IP（通常 `192.168.xxx.1`，也就是虚拟机的网关地址）。
->
-> ```bash
-> # 在虚拟机里查看网关（即 Windows 宿主机在 NAT 中的 IP）
-> ip route | grep default | awk '{print $3}'
-> # 或者
-> netstat -rn | grep UG | awk '{print $2}'
-> ```
-
-### 9.4 启动 ngrok
-
-```bash
-# 后台启动所有隧道
-ngrok start --all --config ~/.ngrok2/ngrok.yml > /dev/null &
-
-# 查看公网地址
-# 查看公网地址（任选一种）
-# 方式一：浏览器打开 http://虚拟机IP:4040 直接看
-# 方式二：命令行
-curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*"' | cut -d'"' -f4
-```
-
-更直观的方式——浏览器打开 `http://虚拟机的IP:4040`（ngrok 本地管理界面），可以看到每个隧道的公网 URL 和请求日志。
-
-### 9.5 仅暴露虚拟机上的服务（简化版）
-
-如果只需要在外网访问**虚拟机上的 Web 管理界面**（Kibana、RabbitMQ、MinIO），用配置文件一次性启动：
-
-```bash
-# 创建简化配置
-cat > ~/.ngrok2/ngrok-simple.yml << 'EOF'
-version: "3"
-agent:
-  authtoken: 你的authtoken
-tunnels:
-  kibana:
-    proto: http
-    addr: http://localhost:5601
-  rabbitmq:
-    proto: http
-    addr: http://localhost:15672
+  # MinIO 控制台
   minio:
     proto: http
     addr: http://localhost:9001
 EOF
 
 # 后台启动所有隧道
-nohup ngrok start --all --config ~/.ngrok2/ngrok-simple.yml > /tmp/ngrok.log 2>&1 &
-
-# 等几秒后查看公网地址
-sleep 3
-curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*"' | cut -d'"' -f4
+nohup ngrok start --all --config ~/.ngrok2/ngrok.yml > /tmp/ngrok.log 2>&1 &
 ```
 
-或者只暴露单个端口：
+### 9.4 查看公网地址
 
 ```bash
-nohup ngrok http 5601 > /dev/null 2>&1 &
+# 方式一：命令行
+sleep 3
+curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*"' | cut -d'"' -f4
+
+# 方式二：浏览器打开 http://虚拟机IP:4040（ngrok 本地管理界面）
+# 可以看到每个隧道的公网 URL 和请求日志
+```
+
+### 9.5 只暴露系统（简化版）
+
+如果只需要在外网访问赫尔墨斯系统，一行命令：
+
+```bash
+nohup ngrok http 8000 > /tmp/ngrok.log 2>&1 &
 curl -s http://127.0.0.1:4040/api/tunnels | grep -o '"public_url":"[^"]*"' | cut -d'"' -f4
 ```
 
 ### 9.6 使用 Docker 运行 ngrok（可选）
 
-如果不想直接装在虚拟机上，也可以用 Docker：
-
 ```bash
-# 添加到 docker-compose.yml 或单独运行
 docker run -d --name ngrok \
   -e NGROK_AUTHTOKEN=你的authtoken \
   --network host \
-  ngrok/ngrok:latest http 5601 15672 9001
+  ngrok/ngrok:latest http 8000 5601 15672 9001
 
 # 查看公网地址
 curl http://127.0.0.1:4040/api/tunnels 2>/dev/null
@@ -739,7 +697,7 @@ curl http://127.0.0.1:4040/api/tunnels 2>/dev/null
 
 1. **免费限制**：ngrok 免费版每次启动域名随机变化，且有速率限制（~40 req/min）。正式使用建议升级付费版或自建 [frp](https://github.com/fatedier/frp) 替代
 2. **安全**：ngrok 会把服务暴露到公网，务必确保：
-   - 生产密码不要写在 .env 里
+   - 生产密码不要写成弱密码
    - Kibana 和 MinIO 控制台加上访问密码
    - 用完后及时关闭 ngrok
 3. **后台运行**：关闭终端后 ngrok 会停止。可以用 `nohup` 或 `screen` 保持后台运行
@@ -807,16 +765,15 @@ vim .env   # 修改数据库密码、JWT_SECRET、LLM_API_KEY 等
 bash /opt/hermes/scripts/vm-deploy.sh
 ```
 
-脚本自动完成 6 步：
+脚本自动完成 5 步：
 
 | 步骤 | 操作 | 说明 |
-|------|------|------|
-| 1/6 | 前置检查 | 确认 Docker、Git 已安装 |
-| 2/6 | `git pull` | 拉取最新代码和配置 |
-| 3/6 | `docker login` | 登录阿里云 ACR（首次需输入凭据） |
-| 4/6 | `docker compose up -d` | 仅重建 app 容器，基础设施不动 |
-| 5/6 | `alembic upgrade head` | 数据库迁移 |
-| 6/6 | `curl /health` | 健康检查（最多等 60s） |
+| ---- | ---- | ---- |
+| 1/5 | `docker login` | 登录阿里云 ACR |
+| 2/5 | `docker compose pull` | 从 ACR 拉取最新镜像 |
+| 3/5 | `docker compose up -d` | 重建 app 容器（前后端合一） |
+| 4/5 | `alembic upgrade head` | 数据库迁移 |
+| 5/5 | `curl /health` | 健康检查（最多等 60s） |
 
 ### 10.4 设置 ACR 凭据环境变量
 
