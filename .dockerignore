@@ -54,5 +54,6 @@ Thumbs.db
 # Logs
 *.log
 
-# Alembic (migrations are included in image, but not the ini with local config)
-alembic.ini
+# Alembic migrations are included in image; alembic.ini is also included
+# because alembic needs its [alembic] section (script_location etc.).
+# The DB URL inside alembic.ini is overridden by env.py via settings.database_url_sync.

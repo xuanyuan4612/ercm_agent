@@ -19,7 +19,7 @@ COMPOSE_FILE="docker-compose.prod.yml"
 HEALTH_URL="http://localhost:8000/health"
 MAX_HEALTH_RETRIES=30
 HEALTH_RETRY_INTERVAL=2
-PULL_TIMEOUT="${PULL_TIMEOUT:-60}"
+PULL_TIMEOUT="${PULL_TIMEOUT:-600}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
@@ -101,10 +101,14 @@ docker image prune -f
 # ==================== 4. 数据库迁移 ====================
 log "运行数据库迁移..."
 sleep 5
-if $DOCKER_COMPOSE -f "$COMPOSE_FILE" exec -T api alembic upgrade head 2>/dev/null; then
+MIGRATION_ERR=$(mktemp)
+if $DOCKER_COMPOSE -f "$COMPOSE_FILE" exec -T api alembic upgrade head 2>"$MIGRATION_ERR"; then
     log "数据库迁移完成"
+    rm -f "$MIGRATION_ERR"
 else
-    log "[WARN] 数据库迁移失败，请检查: $DOCKER_COMPOSE -f $COMPOSE_FILE logs api"
+    log "[WARN] 数据库迁移失败："
+    cat "$MIGRATION_ERR" | while read -r line; do log "  $line"; done
+    rm -f "$MIGRATION_ERR"
 fi
 
 # ==================== 5. 健康检查 ====================
