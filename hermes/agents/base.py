@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from hermes.agents.llm_adapter import llm_adapter
 from hermes.agents.profiles import ModuleAgentProfile
-from hermes.agents.rag_engine import RAGEngine
+from hermes.agents.rag_engine import RAGOrchestrator
 from hermes.core.logging import get_logger
 from hermes.core.observability import observe
 
@@ -85,7 +85,7 @@ class BaseStageAgent(ABC):
 
     def __init__(self, profile: ModuleAgentProfile | None = None) -> None:
         self.profile = profile
-        self._rag_engine: RAGEngine | None = None
+        self._rag_engine: RAGOrchestrator | None = None
 
     @abstractmethod
     async def run(self, **kwargs: Any) -> Any:
@@ -105,7 +105,7 @@ class BaseStageAgent(ABC):
     ) -> list[dict]:
         """知识库检索（Langfuse 追踪：retriever span）"""
         if self._rag_engine is None:
-            self._rag_engine = RAGEngine(db_session)
+            self._rag_engine = RAGOrchestrator(db_session)
         kb = kb_types or self.kb_types
         return await self._rag_engine.search(query, kb, top_k)
 
@@ -118,9 +118,9 @@ class BaseStageAgent(ABC):
     ) -> str:
         """获取格式化后的检索上下文"""
         if self._rag_engine is None:
-            self._rag_engine = RAGEngine(db_session)
+            self._rag_engine = RAGOrchestrator(db_session)
         kb = kb_types or self.kb_types
-        return await self._rag_engine.get_retrieval_context(query, kb, top_k)
+        return await self._rag_engine._get_context_async(query, kb, top_k)
 
     @observe(as_type="generation", name="agent.llm_invoke")
     async def _invoke_llm(
