@@ -25,6 +25,14 @@ class KnowledgeDocument(UUIDMixin, Base):
     source_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     chunk_index: Mapped[int] = mapped_column(Integer, default=1)
     total_chunks: Mapped[int] = mapped_column(Integer, default=1)
+    document_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, index=True,
+        comment="文档分组键：同一文件的所有 chunk 共享此 UUID，由入库服务在 Python 侧生成"
+    )
+    embedding_status: Mapped[str] = mapped_column(
+        String(20), default="none", nullable=False, server_default="none",
+        comment="向量化状态: none / pending / done / failed"
+    )
     # ── 新增字段 ──
     approval_status: Mapped[str] = mapped_column(
         String(20), default="approved", nullable=False, index=True,
