@@ -17,7 +17,7 @@
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `hermes/agents/rag_engine.py` | **重写** | 保留旧 `RAGEngine` + 新增 `RAGOrchestrator` |
+| `hermes/agents/rag_engine.py` | **重写** | 删除旧 `RAGEngine`，替换为 `RAGOrchestrator` |
 | `hermes/agents/rag_schemas.py` | **新增** | 请求/响应 Pydantic 模型 |
 | `hermes/agents/base.py` | **修改** | `BaseStageAgent` 支持新 `retrieve()` 调用 |
 | `hermes/services/__init__.py` | **修改** | 导出 knowledge_ingestion 服务 |
@@ -33,11 +33,12 @@
 
 ## 三、RAGOrchestrator 设计
 
-### 3.1 与旧 RAGEngine 的兼容
+### 3.1 替换策略
 
-- 旧 `RAGEngine.search()` 和 `RAGEngine.get_retrieval_context()` **行为不变**，现有 8 个模块 Stage Agent 不受影响。
-- 新 `RAGOrchestrator` 在同一个文件中，提供 `retrieve()` 方法。
-- Stage Agent 逐步迁移至 `retrieve()`，由各模块 owner 自行决定节奏。
+- **直接全部替换**：删除旧 `RAGEngine`，新类命名为 `RAGOrchestrator`。
+- 旧调用方（`BaseStageAgent._search_kb()` / `_get_retrieval_context()`）**同步更新**为使用 `RAGOrchestrator`。
+- 所有 8 个模块的 Stage Agent 一次性切换到新接口。
+- `search()` 改为 `retrieve()` 的内部简化封装，`get_retrieval_context()` 改为从 `RAGResponse.context` 取值。
 
 ### 3.2 13 步流水线
 
@@ -193,13 +194,13 @@ POST /knowledge-bases/{kb_type}/upload  (multipart/form-data)
 
 1. **rag_schemas.py** — Pydantic 模型（无依赖，先定义契约）
 2. **knowledge.py 模型扩展** — 新增数据库字段 + 迁移
-3. **rag_engine.py** — RAGOrchestrator + 13 步流水线
-4. **base.py** — BaseStageAgent 增加 `_retrieve_kb()` 方法
+3. **rag_engine.py** — 删除旧 RAGEngine，实现 RAGOrchestrator + 13 步流水线
+4. **base.py** — BaseStageAgent 方法改为调用 RAGOrchestrator
 5. **knowledge_ingestion.py** — 上传流水线
 6. **knowledge.py API** — 新端点
 7. **exceptions.py / config.py** — 补充异常类和配置
 8. **测试** — 集成测试 + 权限测试
-9. **文档更新** — `10-rag-shared-agent.md` 对齐实现
+9. **文档完善** — `10-rag-shared-agent.md` 修正错误、补充细节（贯穿实现全过程）
 
 ---
 
@@ -210,5 +211,5 @@ POST /knowledge-bases/{kb_type}/upload  (multipart/form-data)
 - [ ] 降级路径可用且 diagnostics 明确记录
 - [ ] 每条检索结果可追溯到 doc_id + chunk_id + source_path
 - [ ] 文档上传→解析→分块→向量化→入库全流程可跑通
-- [ ] 旧 `search()` / `get_retrieval_context()` 接口行为不变
-- [ ] 存量 8 个模块 Stage Agent 不受影响
+- [ ] `BaseStageAgent` 和所有 8 个模块 Stage Agent 正常工作
+- [ ] `10-rag-shared-agent.md` 文档错误已修正、内容已完善
