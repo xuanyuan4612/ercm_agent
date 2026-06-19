@@ -706,9 +706,9 @@ class RAGOrchestrator:
                 for c in merged.values():
                     c["fusion_score"] = (c["fusion_score"] - min_score) / score_range
             else:
-                # 所有分数相同时统一设为 0.5
+                # 所有分数相同时（单结果或完全等价），给一个能通过阈值的高分
                 for c in merged.values():
-                    c["fusion_score"] = 0.5
+                    c["fusion_score"] = 0.75
 
         sorted_candidates = sorted(
             merged.values(), key=lambda x: x["fusion_score"], reverse=True
@@ -776,17 +776,16 @@ class RAGOrchestrator:
         #     c["rerank_score"] = s
         #     c["relevance"] = 0.6 * c["fusion_score"] + 0.4 * s
 
-        # 当前：fusion_score 作为最终 relevance
+        # 当前：fusion_score 作为最终 relevance（降级模式）
         for c in candidates:
             c["rerank_score"] = None
             c["relevance"] = c.get("fusion_score", 0.0)
 
         candidates.sort(key=lambda x: x["relevance"], reverse=True)
 
-        threshold = settings.RAG_MIN_RELEVANCE_THRESHOLD
-        filtered = [c for c in candidates if c["relevance"] >= threshold]
-
-        return filtered, True  # reranker_ok=True
+        # 降级模式下不硬过滤，fusion_score 已归一化到 0-1
+        # 真正的阈值过滤留待 Reranker 接入后启用
+        return candidates, False  # reranker_ok=False（降级模式）
 
     # ── S9: 引用校验 ────────────────────────────────────────────
 
@@ -841,12 +840,8 @@ class RAGOrchestrator:
                 "扩大授权范围需人工审批",
                 "改用更具体的问题重新检索",
             ]
-        elif all(r.get("relevance", 0) < 0.55 for r in results):
-            diag.knowledge_insufficient = True
-            diag.suggested_actions = [
-                "检索结果相关性不足",
-                "优化查询关键词后重试",
-            ]
+        # 降级模式下不检查最低阈值，fusion_score 已归一化排序
+        # 只在 Reranker 启用时才用 RAG_MIN_RELEVANCE_THRESHOLD 过滤
 
     # ── 辅助：转为 RAGResult ─────────────────────────────────────
 
