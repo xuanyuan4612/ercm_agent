@@ -106,10 +106,40 @@ async def search_knowledge(
     if not allowed:
         return success([])
 
+    # 从当前用户构建权限上下文
+    user_client = getattr(current_user, "client", "group")
+    user_org = getattr(current_user, "org_id", "*")
+    user_role = getattr(current_user, "role", "viewer")
+
     try:
         orch = RAGOrchestrator(db)
-        results = await orch.search(query, list(allowed), top_k, mode="hybrid")
-        return success(results)
+        # 使用 retrieve() 替代 search() 以确保权限过滤生效
+        request = RAGRequest(
+            query=query,
+            module="common",
+            stage="search",
+            tenant_scope=TenantScope(
+                client=user_client,
+                org_ids=[user_org],
+                role=user_role,
+                security_levels=["public", "internal"],
+            ),
+            trace_id="search-api",
+            kb_types=list(allowed),
+            top_k=top_k,
+        )
+        response = await orch.retrieve(request)
+        return success([
+            {
+                "doc_id": r.doc_id,
+                "kb_type": r.kb_type,
+                "title": r.title,
+                "content_snippet": r.content_snippet,
+                "relevance": r.relevance,
+                "updated_at": r.metadata.effective_at,
+            }
+            for r in response.results
+        ])
     except Exception as e:
         logger.warning("rag_search_failed", error=str(e))
 

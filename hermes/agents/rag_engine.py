@@ -302,9 +302,23 @@ class RAGOrchestrator:
         kb_types: list[str],
         top_k: int = 5,
     ) -> str:
-        """获取格式化后的检索上下文（同步包装）"""
+        """获取格式化后的检索上下文
+
+        注意：此方法为同步包装，内部使用 asyncio.run()。
+        如果在已有事件循环的上下文中调用（如 FastAPI handler），
+        将引发 RuntimeError。推荐在异步上下文中直接使用 _get_context_async()。
+        在同步上下文中（如脚本/CLI/测试），可安全调用。
+        """
         import asyncio as _asyncio
-        return _asyncio.run(self._get_context_async(query, kb_types, top_k))
+        try:
+            # 尝试直接运行（同步上下文）
+            return _asyncio.run(self._get_context_async(query, kb_types, top_k))
+        except RuntimeError:
+            # 已有运行中的事件循环（异步上下文），抛出明确提示
+            raise RuntimeError(
+                "get_retrieval_context() 不能在异步上下文中调用。"
+                "请使用 await orch._get_context_async(query, kb_types, top_k)"
+            )
 
     async def _get_context_async(
         self, query: str, kb_types: list[str], top_k: int
@@ -642,6 +656,20 @@ class RAGOrchestrator:
             elif mode == "keyword" and c.get("keyword_rank"):
                 rrf = c.get("keyword_score", rrf)
             c["fusion_score"] = rrf
+
+        # 归一化 fusion_score 到 0-1 区间（RRF 原始值极小，直接使用会低于阈值）
+        if merged:
+            scores = [c["fusion_score"] for c in merged.values()]
+            max_score = max(scores) if scores else 1.0
+            min_score = min(scores) if scores else 0.0
+            score_range = max_score - min_score
+            if score_range > 0:
+                for c in merged.values():
+                    c["fusion_score"] = (c["fusion_score"] - min_score) / score_range
+            else:
+                # 所有分数相同时统一设为 0.5
+                for c in merged.values():
+                    c["fusion_score"] = 0.5
 
         sorted_candidates = sorted(
             merged.values(), key=lambda x: x["fusion_score"], reverse=True
