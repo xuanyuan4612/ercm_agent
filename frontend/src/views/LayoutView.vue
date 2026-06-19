@@ -45,7 +45,7 @@
         </el-sub-menu>
         <el-menu-item index="/knowledge">
           <el-icon><Collection /></el-icon>
-          <template #title>知识库检索</template>
+          <template #title>知识库</template>
         </el-menu-item>
         <el-menu-item v-if="authStore.isGroup()" index="/admin">
           <el-icon><Setting /></el-icon>

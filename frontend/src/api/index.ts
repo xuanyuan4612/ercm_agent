@@ -125,14 +125,63 @@ export const documentsApi = {
 }
 
 // ═══ 知识库 ═══
+import type {
+  IngestionResult,
+  KnowledgeBaseBrief,
+  KnowledgeDocumentBrief,
+  KnowledgeDocumentDetail,
+  RAGRequest,
+  RAGResponse,
+} from '@/types'
+
 export const knowledgeApi = {
+  /** 知识库检索（完整 RAG 流水线） */
+  retrieve: (data: RAGRequest) =>
+    post<RAGResponse>('/knowledge-bases/retrieve', data as never),
+  /** 知识库搜索（简化接口，向后兼容） */
   search: (query: string, kbTypes?: string, topK = 5) =>
-    get<Array<{ doc_id: string; kb_type: string; title: string; content_snippet: string; relevance: number }>>(
+    get<Array<{ doc_id: string; kb_type: string; title: string; content_snippet: string; relevance: number; updated_at?: string }>>(
       '/knowledge-bases/search',
       { query, kb_types: kbTypes, top_k: topK }
     ),
-  list: (params?: Record<string, unknown>) =>
-    get<PaginatedResponse<Record<string, unknown>>['data']>('/knowledge-bases', params),
+  /** 知识库列表 */
+  list: () =>
+    get<KnowledgeBaseBrief[]>('/knowledge-bases'),
+  /** 文档列表 */
+  listDocuments: (kbType: string, params?: Record<string, unknown>) =>
+    get<PaginatedResponse<KnowledgeDocumentBrief>['data']>(
+      `/knowledge-bases/${kbType}/documents`,
+      params as never
+    ),
+  /** 文档详情 */
+  getDocument: (kbType: string, docId: string) =>
+    get<KnowledgeDocumentDetail>(`/knowledge-bases/${kbType}/documents/${docId}`),
+  /** 上传文件 */
+  uploadFile: (kbType: string, file: File, client?: string, orgId?: string, securityLevel?: string) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const params = new URLSearchParams()
+    if (client) params.set('client', client)
+    if (orgId) params.set('org_id', orgId)
+    if (securityLevel) params.set('security_level', securityLevel)
+    const qs = params.toString()
+    return http.post<ApiResponse<IngestionResult>>(
+      `/knowledge-bases/${kbType}/upload${qs ? '?' + qs : ''}`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    ).then((r) => r.data)
+  },
+  /** 上传纯文本 */
+  uploadText: (kbType: string, title: string, content: string, client?: string, securityLevel?: string) =>
+    post<IngestionResult>(`/knowledge-bases/${kbType}/upload-text`, {
+      title, content, client, security_level: securityLevel,
+    } as never),
+  /** 删除文档 */
+  deleteDocument: (kbType: string, docId: string) =>
+    del<{ message: string }>(`/knowledge-bases/${kbType}/documents/${docId}`),
+  /** 检索反馈 */
+  feedback: (data: { trace_id: string; accepted_refs: string[]; rejected_refs: string[] }) =>
+    post<{ message: string }>('/knowledge-bases/feedback', data as never),
 }
 
 // ═══ AI Agent 模块管理 ═══

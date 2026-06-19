@@ -273,6 +273,143 @@ export const KB_TYPE_LABELS: Record<string, string> = {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// RAG 检索类型
+// ═══════════════════════════════════════════════════════════════
+
+export interface TenantScope {
+  client: string
+  org_ids?: string[]
+  role: string
+  security_levels?: string[]
+}
+
+export interface RAGDiagnostics {
+  recall_mode: string
+  query_count: number
+  search_latency_ms: number
+  vector_latency_ms: number
+  rerank_latency_ms: number
+  total_latency_ms: number
+  degraded: boolean
+  degrade_reasons: string[]
+  embedding_unavailable: boolean
+  reranker_unavailable: boolean
+  knowledge_insufficient: boolean
+  blocked_candidates: number
+  prompt_injection_suspected: boolean
+  suggested_actions: string[]
+}
+
+export interface RetrievalDetail {
+  channels: string[]
+  keyword_score?: number | null
+  vector_score?: number | null
+  fusion_score?: number | null
+  rerank_score?: number | null
+}
+
+export interface DocMetadata {
+  source?: string | null
+  version?: string | null
+  effective_at?: string | null
+  expired_at?: string | null
+  security_level?: string | null
+  client?: string | null
+  org_id?: string | null
+  approval_status?: string | null
+  chunk_index?: number | null
+  total_chunks?: number | null
+}
+
+export interface RAGResult {
+  doc_id: string
+  chunk_id: string
+  kb_type: string
+  title: string
+  content_snippet: string
+  relevance: number
+  source_path?: string | null
+  metadata: DocMetadata
+  retrieval: RetrievalDetail
+}
+
+export interface RAGResponse {
+  results: RAGResult[]
+  context: string
+  knowledge_refs: string[]
+  diagnostics: RAGDiagnostics
+}
+
+export interface RAGRequest {
+  query: string
+  module: string
+  stage: string
+  tenant_scope: TenantScope
+  trace_id: string
+  workflow_thread_id?: string
+  case_id?: string
+  kb_types?: string[] | null
+  knowledge_scope?: string[] | null
+  top_k?: number
+  mode?: 'hybrid' | 'semantic' | 'keyword'
+  evidence_refs?: string[]
+}
+
+// 入库结果
+export interface IngestionResult {
+  success: boolean
+  doc_id: string
+  chunks_created: number
+  chunks_skipped: number
+  error: string
+}
+
+// 文档 chunk
+export interface KnowledgeChunk {
+  chunk_id: string
+  chunk_index: number
+  content_snippet: string
+  content_hash?: string | null
+}
+
+// 文档详情
+export interface KnowledgeDocumentDetail {
+  id: string
+  kb_type: string
+  title: string
+  chunks: KnowledgeChunk[]
+  source_path?: string | null
+  security_level: string
+  client: string
+  org_id: string
+  approval_status: string
+  metadata?: Record<string, unknown> | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+// 知识库概要
+export interface KnowledgeBaseBrief {
+  type: string
+  name: string
+  doc_count: number
+  last_synced?: string | null
+}
+
+// 文档摘要（列表用）
+export interface KnowledgeDocumentBrief {
+  id: string
+  kb_type: string
+  title: string
+  chunk_index: number
+  total_chunks: number
+  security_level: string
+  client: string
+  is_active: boolean
+  updated_at?: string | null
+}
+
+// ═══════════════════════════════════════════════════════════════
 // 工具 Label 映射
 // ═══════════════════════════════════════════════════════════════
 
