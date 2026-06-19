@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, ORJSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from hermes.api.v1.router import api_router
@@ -135,7 +135,6 @@ def create_app() -> FastAPI:
         version=settings.APP_VERSION,
         docs_url="/docs" if settings.DEBUG else None,
         redoc_url="/redoc" if settings.DEBUG else None,
-        default_response_class=ORJSONResponse,
         lifespan=lifespan,
     )
 
@@ -157,14 +156,14 @@ def create_app() -> FastAPI:
 
     # ── 异常处理器 ───────────────────────────────────────────
     @app.exception_handler(HermesError)
-    async def hermes_exception_handler(request: Request, exc: HermesError) -> ORJSONResponse:
-        return ORJSONResponse(
+    async def hermes_exception_handler(request: Request, exc: HermesError) -> JSONResponse:
+        return JSONResponse(
             status_code=exc.status_code,
             content=exc.to_dict(),
         )
 
     @app.exception_handler(Exception)
-    async def unhandled_exception_handler(request: Request, exc: Exception) -> ORJSONResponse:
+    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         trace_id = getattr(request.state, "trace_id", None)
         logger.exception(
             "unhandled_error",
@@ -172,7 +171,7 @@ def create_app() -> FastAPI:
             path=request.url.path,
             error=str(exc),
         )
-        return ORJSONResponse(
+        return JSONResponse(
             status_code=500,
             content={"code": 50000, "message": "服务器内部错误", "detail": str(exc) if settings.DEBUG else None},
         )
