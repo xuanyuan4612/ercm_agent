@@ -15,7 +15,6 @@ import asyncio
 import hashlib
 import re
 import time
-from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -207,7 +206,7 @@ class RAGOrchestrator:
         diag.prompt_injection_suspected = injection_suspected
 
         # S4: Embedding 向量化
-        t_emb = time.monotonic()
+        _t_emb = time.monotonic()  # noqa: F841 — 保留计时点，后续用于延迟统计
         query_embeddings: list[list[float]] = []
         embedding_available = True
         for q in queries:
@@ -284,7 +283,10 @@ class RAGOrchestrator:
             query=query,
             module="common",
             stage="search",
-            tenant_scope={"client": "group", "org_ids": ["*"], "role": "admin", "security_levels": ["public", "internal", "confidential", "secret"]},
+            tenant_scope={
+                "client": "group", "org_ids": ["*"], "role": "admin",
+                "security_levels": ["public", "internal", "confidential", "secret"],
+            },
             trace_id="search-api",
             kb_types=kb_types,
             top_k=top_k,
@@ -320,12 +322,12 @@ class RAGOrchestrator:
         try:
             # 尝试直接运行（同步上下文）
             return _asyncio.run(self._get_context_async(query, kb_types, top_k))
-        except RuntimeError:
+        except RuntimeError as err:
             # 已有运行中的事件循环（异步上下文），抛出明确提示
             raise RuntimeError(
                 "get_retrieval_context() 不能在异步上下文中调用。"
                 "请使用 await orch._get_context_async(query, kb_types, top_k)"
-            )
+            ) from err
 
     async def _get_context_async(
         self, query: str, kb_types: list[str], top_k: int
@@ -334,7 +336,10 @@ class RAGOrchestrator:
             query=query,
             module="common",
             stage="context",
-            tenant_scope={"client": "group", "org_ids": ["*"], "role": "admin", "security_levels": ["public", "internal", "confidential", "secret"]},
+            tenant_scope={
+                "client": "group", "org_ids": ["*"], "role": "admin",
+                "security_levels": ["public", "internal", "confidential", "secret"],
+            },
             trace_id="context-api",
             kb_types=kb_types,
             top_k=top_k,

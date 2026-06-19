@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import io
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -183,14 +183,14 @@ class KnowledgeIngestionService:
                 client=client,
                 org_id=org_id,
                 approval_status="approved",
-                effective_at=datetime.now(timezone.utc),
+                effective_at=datetime.now(UTC),
                 metadata_={
                     "source": "manual_upload",
                     "original_filename": filename,
                     "format": ext,
                     "minio_bucket": minio_bucket,
                     "minio_key": minio_key,
-                    "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                    "uploaded_at": datetime.now(UTC).isoformat(),
                     **(metadata or {}),
                 },
             )
@@ -217,7 +217,7 @@ class KnowledgeIngestionService:
                 "approval_status": "approved",
                 "chunk_index": i + 1,
                 "total_chunks": total,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
             })
 
         logger.info(
@@ -280,10 +280,10 @@ class KnowledgeIngestionService:
             client=client,
             org_id=org_id,
             approval_status="approved",
-            effective_at=datetime.now(timezone.utc),
+            effective_at=datetime.now(UTC),
             metadata_={
                 "source": "text_input",
-                "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                "uploaded_at": datetime.now(UTC).isoformat(),
                 **(metadata or {}),
             },
         )
@@ -305,7 +305,7 @@ class KnowledgeIngestionService:
             "approval_status": "approved",
             "chunk_index": 1,
             "total_chunks": total_chunks,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         })
 
         # 写入剩余 chunks
@@ -324,7 +324,7 @@ class KnowledgeIngestionService:
                 client=client,
                 org_id=org_id,
                 approval_status="approved",
-                effective_at=datetime.now(timezone.utc),
+                effective_at=datetime.now(UTC),
                 metadata_=doc.metadata_,
             )
             self.db.add(chunk_doc)
@@ -345,7 +345,7 @@ class KnowledgeIngestionService:
                 "approval_status": "approved",
                 "chunk_index": i,
                 "total_chunks": len(chunks),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
             })
 
         await self.db.flush()
@@ -378,8 +378,8 @@ class KnowledgeIngestionService:
                 from docx import Document
                 doc = Document(io.BytesIO(file_content))
                 return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-            except ImportError:
-                raise ImportError("python-docx 未安装，无法解析 docx 文件")
+            except ImportError as e:
+                raise ImportError("python-docx 未安装，无法解析 docx 文件") from e
 
         if ext == "pdf":
             try:
@@ -389,8 +389,8 @@ class KnowledgeIngestionService:
                     page.extract_text() or ""
                     for page in reader.pages
                 )
-            except ImportError:
-                raise ImportError("PyPDF2 未安装，无法解析 pdf 文件")
+            except ImportError as e:
+                raise ImportError("PyPDF2 未安装，无法解析 pdf 文件") from e
 
         raise ValueError(f"未知文件格式: {ext}")
 

@@ -195,6 +195,6 @@ class UnsupportedFileFormatError(HermesError):
         super().__init__(
             code=40008,
             message=f"不支持的文件格式: {format}",
-            detail=detail or f"支持的格式: txt, md, json, docx, pdf",
+            detail=detail or "支持的格式: txt, md, json, docx, pdf",
             status_code=400,
         )

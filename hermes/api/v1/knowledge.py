@@ -22,7 +22,7 @@ from hermes.core.logging import get_logger
 from hermes.core.response import paginated, success
 from hermes.db.models.knowledge import KnowledgeDocument
 from hermes.db.session import get_db
-from hermes.services.knowledge_ingestion import KnowledgeIngestionService, SUPPORTED_FORMATS
+from hermes.services.knowledge_ingestion import SUPPORTED_FORMATS, KnowledgeIngestionService
 
 logger = get_logger(__name__)
 
