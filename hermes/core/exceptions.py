@@ -163,3 +163,38 @@ class KnowledgeBaseNotFoundError(NotFoundError):
             message="知识库类型不存在",
             detail=f"kb_type={kb_type} not found",
         )
+
+
+class RAGPermissionDeniedError(HermesError):
+    """RAG 权限不足，拒绝检索"""
+    def __init__(self, message: str = "权限不足，无法执行知识库检索", detail: str | None = None):
+        super().__init__(code=40308, message=message, detail=detail, status_code=403)
+
+
+class RAGKnowledgeInsufficientError(HermesError):
+    """RAG 知识不足，建议补充知识库或扩大授权"""
+    def __init__(self, message: str = "知识库内容不足以回答此问题", detail: str | None = None):
+        super().__init__(code=40409, message=message, detail=detail, status_code=404)
+
+
+class RAGEmbeddingUnavailableError(HermesError):
+    """Embedding 服务不可用"""
+    def __init__(self, message: str = "Embedding 服务不可用", detail: str | None = None):
+        super().__init__(code=50008, message=message, detail=detail, status_code=500)
+
+
+class RAGIngestionError(HermesError):
+    """知识入库失败"""
+    def __init__(self, message: str = "知识入库处理失败", detail: str | None = None):
+        super().__init__(code=42208, message=message, detail=detail, status_code=422)
+
+
+class UnsupportedFileFormatError(HermesError):
+    """不支持的文件格式"""
+    def __init__(self, format: str, detail: str | None = None):
+        super().__init__(
+            code=40008,
+            message=f"不支持的文件格式: {format}",
+            detail=detail or f"支持的格式: txt, md, json, docx, pdf",
+            status_code=400,
+        )
