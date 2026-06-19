@@ -836,15 +836,13 @@ RAG 至少应采集以下指标：
 - `knowledge_documents` 保存知识文本、embedding、metadata、source_path 和 chunk 信息。
 - pgvector 和 ILIKE 是当前主要可用检索路径。
 
-后续实现建议按兼容路线演进：
-
-1. 保留旧 `search()` 返回列表，避免破坏现有 Stage Agent。
-2. 新增统一 `retrieve()`，返回完整 RAG 响应。
-3. 在 `retrieve()` 中实现请求校验、权限过滤、diagnostics、引用校验和 context 组装。
-4. 抽象 Search Adapter、Vector Adapter、Reranker Adapter。
-5. 开发/测试继续用 pgvector，生产切换到 Search Adapter + Milvus。
-6. Knowledge API 搜索结果逐步增加 diagnostics 和 knowledge_refs。
-7. HITL 和报告终稿引用回流到训练数据池。
+当前实现状态（v1.0）：
+1. `RAGOrchestrator.retrieve()` 已实现完整 13 步流水线。
+2. `search()` 作为 `retrieve()` 的简化封装，返回旧 dict 格式。
+3. `get_retrieval_context()` 内部调用 `retrieve()` 并取 context 字段。
+4. Search Adapter / Vector Adapter / Reranker Adapter 已预留接口，当前使用 pgvector + ILIKE。
+5. 知识上传流水线已实现：文件解析 → 分块 → 向量化 → 入库。
+6. HITL 反馈闭环接口已预留（`POST /knowledge-bases/feedback`），完整功能待后续实现。
 
 ---
 
@@ -860,3 +858,16 @@ RAG 至少应采集以下指标：
 - 降级路径可用，但必须可见、可审计。
 - 新知识自动沉淀必须经过业务 owner 审核。
 - RAG 质量通过人工采纳/驳回引用持续改进。
+
+---
+## 十四、实现与文档对照
+
+| 文档章节 | 实现文件 | 说明 |
+|----------|----------|------|
+| §三 统一调用契约 | `hermes/agents/rag_schemas.py` | RAGRequest / RAGResponse Pydantic 模型 |
+| §四 13 步处理步骤 | `hermes/agents/rag_engine.py` | RAGOrchestrator 类 |
+| §五 知识入库设计 | `hermes/services/knowledge_ingestion.py` | KnowledgeIngestionService |
+| §六 知识库类型 | `hermes/agents/rag_engine.py:KB_TYPE_MAP` | KB_TYPE_MAP 字典 |
+| §七 降级策略 | `hermes/agents/rag_engine.py` | RAGDiagnostics.degrade_reasons |
+| §八 安全设计 | `hermes/agents/rag_engine.py:S2/S3/S7` | 权限解析/注入检测/硬过滤 |
+| §十一 冷启动 | `hermes/scripts/seed.py` | 知识库可通过 API 上传初始化 |
