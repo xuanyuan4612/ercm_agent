@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import re
+import uuid as _uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -95,6 +97,9 @@ class KnowledgeIngestionService:
         metadata: dict | None = None,
     ) -> IngestionResult:
         """处理上传文件并入库"""
+        # S0: 生成文档分组 ID
+        document_id = str(_uuid.uuid4())
+
         # S1: 格式校验
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
         if ext not in SUPPORTED_FORMATS:
@@ -125,17 +130,19 @@ class KnowledgeIngestionService:
         title = filename.rsplit(".", 1)[0] if "." in filename else filename
         chunks = self._chunk_text(text)
 
-        # S6: 原始文件写入 MinIO
+        # S6: 原始文件写入 MinIO（线程池，避免阻塞事件循环）
         minio_bucket = ""
         minio_key = ""
         if self._minio:
             try:
                 minio_bucket = settings.MINIO_BUCKET
-                minio_key = f"knowledge/{kb_type}/{filename}"
-                self._minio.put_object(
+                minio_key = f"knowledge/{kb_type}/{document_id}/{filename}"
+                data = io.BytesIO(file_content)
+                await asyncio.to_thread(
+                    self._minio.put_object,
                     bucket_name=minio_bucket,
                     object_name=minio_key,
-                    data=io.BytesIO(file_content),
+                    data=data,
                     length=len(file_content),
                 )
                 logger.info("minio_uploaded", bucket=minio_bucket, key=minio_key, size=len(file_content))
@@ -143,17 +150,10 @@ class KnowledgeIngestionService:
                 logger.warning("minio_upload_failed", filename=filename, error=str(e))
                 # MinIO 失败不阻塞入库
 
-        # S7: 去重检查 + 向量化 + 写入 PostgreSQL
-        search_adapter = self._get_search_adapter()
-        doc_uuid = ""
-        chunks_created = 0
-        chunks_skipped = 0
-        total = len(chunks)
-
+        # S7: 去重检查
+        deduped_chunks: list[tuple[int, str, str]] = []  # (index, text, hash)
         for i, chunk_text in enumerate(chunks):
             content_hash_val = hashlib.sha256(chunk_text.encode()).hexdigest()
-
-            # 检查是否已存在
             exists = await self.db.execute(
                 select(KnowledgeDocument.id).where(
                     KnowledgeDocument.content_hash == content_hash_val,
@@ -162,20 +162,38 @@ class KnowledgeIngestionService:
                 ).limit(1)
             )
             if exists.scalar_one_or_none():
-                chunks_skipped += 1
                 logger.info("ingestion_chunk_skipped", filename=filename, chunk=i + 1, reason="duplicate")
                 continue
+            deduped_chunks.append((i, chunk_text, content_hash_val))
 
-            # Embedding 向量化
-            embedding = await self._get_embedding(chunk_text)
+        if not deduped_chunks:
+            return IngestionResult(success=True, chunks_skipped=len(chunks), error="所有 chunk 已存在（重复）")
 
-            # 构建文档记录
+        # S8: 批量向量化（并行请求所有 chunk）
+        embeddings: dict[int, list[float] | None] = {}
+        embed_tasks = [self._get_embedding(chunk_text) for _, chunk_text, _ in deduped_chunks]
+        embed_results = await asyncio.gather(*embed_tasks)
+        for (idx, _, _), emb in zip(deduped_chunks, embed_results):
+            embeddings[idx] = emb
+
+        # S9: 写入 PostgreSQL + ES
+        search_adapter = self._get_search_adapter()
+        doc_uuid = ""
+        chunks_created = 0
+        total = len(chunks)
+
+        for i, chunk_text, content_hash_val in deduped_chunks:
+            embedding = embeddings.get(i)
+            emb_status = "done" if embedding is not None else "failed"
+
             doc = KnowledgeDocument(
                 kb_type=kb_type,
                 title=title,
                 content=chunk_text,
                 content_hash=content_hash_val,
                 embedding=embedding,
+                embedding_status=emb_status,
+                document_id=document_id,
                 source_path=filename,
                 chunk_index=i + 1,
                 total_chunks=total,
@@ -201,11 +219,11 @@ class KnowledgeIngestionService:
                 doc_uuid = str(doc.id)
             chunks_created += 1
 
-            # S8: 写入 Elasticsearch 全文索引（异步，失败不阻塞）
-            chunk_id = f"{doc.id}:{i + 1}"
+            # ES 索引（异步，失败不阻塞）
+            chunk_id_val = f"{doc.id}:{i + 1}"
             await search_adapter.index_document({
                 "doc_id": str(doc.id),
-                "chunk_id": chunk_id,
+                "chunk_id": chunk_id_val,
                 "kb_type": kb_type,
                 "title": title,
                 "content": chunk_text,
@@ -246,6 +264,7 @@ class KnowledgeIngestionService:
     ) -> IngestionResult:
         """直接入库纯文本知识条目"""
         content_hash_val = hashlib.sha256(content.encode()).hexdigest()
+        document_id = str(_uuid.uuid4())
 
         exists = await self.db.execute(
             select(KnowledgeDocument.id).where(
@@ -259,81 +278,52 @@ class KnowledgeIngestionService:
 
         # 分块
         chunks = self._chunk_text(content)
-
-        embedding = None
-        if chunks:
-            embedding = await self._get_embedding(chunks[0])
-
-        search_adapter = self._get_search_adapter()
         total_chunks = max(len(chunks), 1)
 
-        doc = KnowledgeDocument(
-            kb_type=kb_type,
-            title=title,
-            content=content if len(chunks) <= 1 else chunks[0],
-            content_hash=content_hash_val,
-            embedding=embedding,
-            source_path=f"text://{title}",
-            chunk_index=1,
-            total_chunks=total_chunks,
-            security_level=security_level,
-            client=client,
-            org_id=org_id,
-            approval_status="approved",
-            effective_at=datetime.now(UTC),
-            metadata_={
-                "source": "text_input",
-                "uploaded_at": datetime.now(UTC).isoformat(),
-                **(metadata or {}),
-            },
-        )
-        self.db.add(doc)
-        await self.db.flush()
+        # 批量向量化所有 chunk
+        embed_tasks = [self._get_embedding(c) for c in chunks]
+        embed_results = await asyncio.gather(*embed_tasks)
 
-        # ES 索引：第一块
-        await search_adapter.index_document({
-            "doc_id": str(doc.id),
-            "chunk_id": f"{doc.id}:1",
-            "kb_type": kb_type,
-            "title": title,
-            "content": chunks[0] if chunks else content,
-            "content_snippet": (chunks[0] if chunks else content)[:300],
-            "source_path": f"text://{title}",
-            "security_level": security_level,
-            "client": client,
-            "org_id": org_id,
-            "approval_status": "approved",
-            "chunk_index": 1,
-            "total_chunks": total_chunks,
-            "updated_at": datetime.now(UTC).isoformat(),
-        })
+        search_adapter = self._get_search_adapter()
+        doc_uuid = ""
 
-        # 写入剩余 chunks
-        for i, chunk_text in enumerate(chunks[1:], 2):
+        for i, chunk_text in enumerate(chunks):
             chunk_hash = hashlib.sha256(chunk_text.encode()).hexdigest()
-            chunk_doc = KnowledgeDocument(
+            embedding = embed_results[i] if i < len(embed_results) else None
+            emb_status = "done" if embedding is not None else "failed"
+
+            doc = KnowledgeDocument(
                 kb_type=kb_type,
                 title=title,
                 content=chunk_text,
                 content_hash=chunk_hash,
-                embedding=None,
+                embedding=embedding,
+                embedding_status=emb_status,
+                document_id=document_id,
                 source_path=f"text://{title}",
-                chunk_index=i,
-                total_chunks=len(chunks),
+                chunk_index=i + 1,
+                total_chunks=total_chunks,
                 security_level=security_level,
                 client=client,
                 org_id=org_id,
                 approval_status="approved",
                 effective_at=datetime.now(UTC),
-                metadata_=doc.metadata_,
+                metadata_={
+                    "source": "text_input",
+                    "uploaded_at": datetime.now(UTC).isoformat(),
+                    **(metadata or {}),
+                },
             )
-            self.db.add(chunk_doc)
+            self.db.add(doc)
             await self.db.flush()
 
-            # ES 索引：后续块
+            if not doc_uuid:
+                doc_uuid = str(doc.id)
+
+            # ES 索引
             await search_adapter.index_document({
-                "doc_id": str(chunk_doc.id),
-                "chunk_id": f"{chunk_doc.id}:{i}",
+                "doc_id": str(doc.id),
+                "chunk_id": f"{doc.id}:{i + 1}",
                 "kb_type": kb_type,
                 "title": title,
                 "content": chunk_text,
@@ -343,13 +333,13 @@ class KnowledgeIngestionService:
                 "client": client,
                 "org_id": org_id,
                 "approval_status": "approved",
-                "chunk_index": i,
-                "total_chunks": len(chunks),
+                "chunk_index": i + 1,
+                "total_chunks": total_chunks,
                 "updated_at": datetime.now(UTC).isoformat(),
             })
 
         await self.db.flush()
-        return IngestionResult(success=True, doc_id=str(doc.id), chunks_created=total_chunks)
+        return IngestionResult(success=True, doc_id=doc_uuid, chunks_created=total_chunks)
 
     # ── 内部方法 ─────────────────────────────────────────────────
 
@@ -411,7 +401,7 @@ class KnowledgeIngestionService:
         return text.strip()
 
     def _chunk_text(self, text: str) -> list[str]:
-        """语义分块：按段落边界 + 字符数限制切分"""
+        """语义分块：按段落边界 + 字符数限制切分，相邻 chunk 带 overlap"""
         chunk_size = settings.INGESTION_CHUNK_SIZE
         chunk_overlap = settings.INGESTION_CHUNK_OVERLAP
 
@@ -428,7 +418,10 @@ class KnowledgeIngestionService:
             else:
                 if current:
                     chunks.append(current)
-                if len(para) > chunk_size:
+                    # 取上一段末尾作为新 chunk 的 overlap 前缀
+                    overlap_text = current[-chunk_overlap:] if len(current) > chunk_overlap else current
+                    current = overlap_text + "\n\n" + para if overlap_text else para
+                elif len(para) > chunk_size:
                     sub_chunks = self._split_long_paragraph(para, chunk_size, chunk_overlap)
                     chunks.extend(sub_chunks)
                     current = ""

@@ -15,7 +15,7 @@ import asyncio
 import hashlib
 import re
 import time
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from sqlalchemy import and_, func, or_, select, text
@@ -232,7 +232,7 @@ class RAGOrchestrator:
 
         # S7-S13 见 Part 3
         # S7: 二次硬过滤
-        filtered, blocked = self._hard_filter(merged, metadata_filter, profile, request)
+        filtered, blocked = self._hard_filter(merged, metadata_filter, request)
         diag.blocked_candidates = blocked
 
         # S8: Rerank 精排
@@ -269,9 +269,13 @@ class RAGOrchestrator:
         query: str,
         kb_types: list[str] | None = None,
         top_k: int = 5,
-        mode: str = "hybrid",
+        mode: Literal["hybrid", "semantic", "keyword"] = "hybrid",
     ) -> list[dict[str, Any]]:
-        """简化搜索（兼容旧调用方），返回旧 dict 格式。"""
+        """简化搜索（内部兼容旧调用方），返回旧 dict 格式。
+
+        注意：此方法仅供 Agent 内部调用，使用系统级全权限 scope。
+        外部 API 必须使用 retrieve() 并传入用户 tenant_scope。
+        """
         if kb_types is None:
             kb_types = list(KB_TYPE_MAP.keys())
 
@@ -286,7 +290,7 @@ class RAGOrchestrator:
             trace_id="search-api",
             kb_types=kb_types,
             top_k=top_k,
-            mode=mode,  # type: ignore[arg-type]
+            mode=mode,
         )
         response = await self.retrieve(request)
         return [
@@ -296,7 +300,7 @@ class RAGOrchestrator:
                 "title": r.title,
                 "content_snippet": r.content_snippet,
                 "relevance": r.relevance,
-                "updated_at": r.metadata.effective_at,
+                "updated_at": "",  # 旧兼容字段，父级模型无此字段
             }
             for r in response.results
         ]
@@ -504,12 +508,13 @@ class RAGOrchestrator:
                 )
                 for row in result.fetchall():
                     doc_id = str(row[0])
-                    if doc_id in seen:
+                    chunk_id_val = f"{doc_id}:{row[6] or 1}"
+                    if chunk_id_val in seen:
                         continue
-                    seen.add(doc_id)
+                    seen.add(chunk_id_val)
                     candidates.append({
                         "doc_id": doc_id,
-                        "chunk_id": f"{doc_id}:{row[6] or 1}",
+                        "chunk_id": chunk_id_val,
                         "kb_type": row[1],
                         "title": row[2],
                         "content_snippet": row[3] or "",
@@ -620,9 +625,10 @@ class RAGOrchestrator:
 
                 for row in rows:
                     doc_id = str(row[0])
-                    if doc_id in seen:
+                    chunk_id_val = f"{doc_id}:{row[5] or 1}"
+                    if chunk_id_val in seen:
                         continue
-                    seen.add(doc_id)
+                    seen.add(chunk_id_val)
 
                     title = row[2] or ""
                     content_snippet = row[3] or ""
@@ -723,7 +729,6 @@ class RAGOrchestrator:
     def _hard_filter(
         candidates: list[dict[str, Any]],
         metadata_filter: dict,
-        profile: ModuleAgentProfile | None,
         request: RAGRequest,
     ) -> tuple[list[dict[str, Any]], int]:
         """内存级权限/密级/状态二次过滤，防止索引延迟导致越权"""

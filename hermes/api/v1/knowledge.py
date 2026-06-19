@@ -407,14 +407,19 @@ async def get_document_detail(
     if not doc:
         raise NotFoundError(message="文档不存在")
 
-    # 查询同一文档的其他 chunks（通过 title + kb_type 匹配）
-    chunks_result = await db.execute(
-        select(KnowledgeDocument).where(
+    # 查询同一文档的其他 chunks（优先 document_id，兼容旧数据按 title）
+    if doc.document_id:
+        chunks_query = select(KnowledgeDocument).where(
+            KnowledgeDocument.document_id == doc.document_id,
+            KnowledgeDocument.is_active == True,
+        ).order_by(KnowledgeDocument.chunk_index)
+    else:
+        chunks_query = select(KnowledgeDocument).where(
             KnowledgeDocument.kb_type == kb_type,
             KnowledgeDocument.title == doc.title,
             KnowledgeDocument.is_active == True,
         ).order_by(KnowledgeDocument.chunk_index)
-    )
+    chunks_result = await db.execute(chunks_query)
     all_chunks = chunks_result.scalars().all()
 
     return success({
@@ -447,8 +452,9 @@ async def delete_document(
     doc_id: uuid.UUID,
     current_user: GroupRoleRequired,
     db: AsyncSession = Depends(get_db),
+    es_client: Any = Depends(_get_es_client),
 ) -> dict[str, Any]:
-    """删除知识库文档（逻辑删除）"""
+    """删除知识库文档（逻辑删除所有 chunk + ES 同步）"""
     if kb_type not in VALID_KB_TYPES:
         raise KnowledgeBaseNotFoundError(kb_type)
 
@@ -459,9 +465,39 @@ async def delete_document(
     if not doc:
         raise NotFoundError(message="文档不存在")
 
-    doc.is_active = False
+    # 按 document_id 或 title 查找所有关联 chunk
+    delete_key = doc.document_id
+    if delete_key:
+        chunks_result = await db.execute(
+            select(KnowledgeDocument).where(
+                KnowledgeDocument.document_id == delete_key,
+                KnowledgeDocument.is_active == True,
+            )
+        )
+    else:
+        # 兼容旧数据：无 document_id 时按 title + kb_type 匹配
+        chunks_result = await db.execute(
+            select(KnowledgeDocument).where(
+                KnowledgeDocument.kb_type == kb_type,
+                KnowledgeDocument.title == doc.title,
+                KnowledgeDocument.is_active == True,
+            )
+        )
+
+    chunks = chunks_result.scalars().all()
+    deleted_count = 0
+    for chunk in chunks:
+        chunk.is_active = False
+        deleted_count += 1
     await db.flush()
-    return success(message=f"文档 {doc.title} 已删除")
+
+    # 从 ES 中删除
+    from hermes.integrations.search_adapter import SearchAdapter
+    es_adapter = SearchAdapter(es_client)
+    if es_adapter.available:
+        await es_adapter.delete_by_title(kb_type, doc.title)
+
+    return success(message=f"文档 {doc.title} 已删除（{deleted_count} 个 chunk）")
 
 
 # ═══════════════════════════════════════════════════════════════
