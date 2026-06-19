@@ -152,6 +152,20 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "text-embedding-3-large"
     EMBEDDING_DIM: int = 1536
 
+    # ── RAG 检索配置 ───────────────────────────────────────────
+    RAG_DEFAULT_TOP_K: int = 5
+    RAG_MAX_TOP_K: int = 20
+    RAG_RECALL_MULTIPLIER: int = 5  # 每路召回 top_k * multiplier 候选
+    RAG_RRF_K: int = 60  # RRF 融合平滑常数
+    RAG_MIN_RELEVANCE_THRESHOLD: float = 0.55  # 最低相关度阈值
+    RAG_EMBEDDING_CACHE_TTL: int = 300  # Embedding 缓存秒数
+    RAG_LLM_PREPROCESS_ENABLED: bool = True  # 是否用 LLM 生成子查询
+
+    # ── 知识入库配置 ───────────────────────────────────────────
+    INGESTION_CHUNK_SIZE: int = 1000  # 分块字符数
+    INGESTION_CHUNK_OVERLAP: int = 200  # 分块重叠字符数
+    INGESTION_MAX_FILE_SIZE_MB: int = 50  # 单文件最大大小
+
     # ── JWT ────────────────────────────────────────────────────
     JWT_SECRET: SecretStr = SecretStr("change-me-to-a-random-string-at-least-32-chars")
     JWT_ALGORITHM: str = "HS256"
