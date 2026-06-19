@@ -383,13 +383,17 @@ class KnowledgeIngestionService:
 
         if ext == "pdf":
             try:
-                import pymupdf4llm
-                md_text = pymupdf4llm.to_markdown(io.BytesIO(file_content))
-                if md_text and md_text.strip():
-                    return md_text.strip()
-                # 如果 pymupdf4llm 返回空，降级为纯文本提取
                 import fitz
                 doc = fitz.open(stream=file_content, filetype="pdf")
+                try:
+                    import pymupdf4llm
+                    md_text = pymupdf4llm.to_markdown(doc)
+                    doc.close()
+                    if md_text and md_text.strip():
+                        return md_text.strip()
+                except Exception:
+                    pass  # pymupdf4llm 失败，降级为 fitz 纯文本
+                # 降级：fitz 纯文本提取
                 text = "\n".join(page.get_text() for page in doc)
                 doc.close()
                 return text
