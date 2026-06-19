@@ -37,6 +37,7 @@ dependencies = [
     "websockets>=13.0",
     "aiofiles>=24.0",
     "langfuse>=2.0.0",
+    "pypdf2>=3.0.1",
 ]
 
 [project.optional-dependencies]

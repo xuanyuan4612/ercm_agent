@@ -223,7 +223,7 @@ export const MODULE_COLORS: Record<string, string> = {
 
 export const KB_TYPE_LABELS: Record<string, string> = {
   // 廉洁监察
-  intact: '初筛入口',
+  intake: '初筛入口',
   investigation: '调查方案',
   analysis: '分析报告',
   disposition: '处置分流',

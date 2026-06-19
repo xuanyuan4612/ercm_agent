@@ -168,7 +168,7 @@ export const knowledgeApi = {
     return http.post<ApiResponse<IngestionResult>>(
       `/knowledge-bases/${kbType}/upload${qs ? '?' + qs : ''}`,
       formData,
-      { headers: { 'Content-Type': 'multipart/form-data' } }
+      { headers: {} }
     ).then((r) => r.data)
   },
   /** 上传纯文本 */

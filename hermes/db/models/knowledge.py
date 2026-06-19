@@ -20,7 +20,7 @@ class KnowledgeDocument(UUIDMixin, Base):
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(4096), nullable=True)
     metadata_: Mapped[dict | None] = mapped_column(JSONB, name="metadata_", nullable=True)
     source_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     chunk_index: Mapped[int] = mapped_column(Integer, default=1)
