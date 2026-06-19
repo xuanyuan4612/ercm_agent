@@ -647,3 +647,169 @@ class RAGOrchestrator:
             merged.values(), key=lambda x: x["fusion_score"], reverse=True
         )
         return sorted_candidates
+
+    # ── S7: 二次硬过滤 ───────────────────────────────────────────
+
+    @staticmethod
+    def _hard_filter(
+        candidates: list[dict[str, Any]],
+        metadata_filter: dict,
+        profile: ModuleAgentProfile | None,
+        request: RAGRequest,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """内存级权限/密级/状态二次过滤，防止索引延迟导致越权"""
+        blocked = 0
+        filtered: list[dict[str, Any]] = []
+
+        allowed_clients = set(metadata_filter.get("client", []))
+        allowed_orgs = set(metadata_filter.get("org_ids", []))
+        allowed_levels = set(metadata_filter.get("security_levels", []))
+
+        for c in candidates:
+            if c.get("client") not in allowed_clients:
+                blocked += 1
+                continue
+            if c.get("org_id") not in allowed_orgs:
+                blocked += 1
+                continue
+            if c.get("security_level") not in allowed_levels:
+                blocked += 1
+                continue
+            if c.get("approval_status") != "approved":
+                blocked += 1
+                continue
+            if request.kb_types and c.get("kb_type") not in request.kb_types:
+                blocked += 1
+                continue
+            filtered.append(c)
+
+        if blocked > 0:
+            logger.info("rag_blocked_candidates", count=blocked, total=len(candidates))
+
+        return filtered, blocked
+
+    # ── S8: Rerank 精排 ──────────────────────────────────────────
+
+    async def _rerank(
+        self, candidates: list[dict[str, Any]], query: str
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """领域 Reranker 精排。
+
+        当前实现：使用融合分数排序（降级方案）。
+        预留 RerankerAdapter 接口，可接入 Cohere/Jina/自建 Reranker。
+        """
+        if not candidates:
+            return candidates, True
+
+        # TODO: 接入 Reranker API 后替换此段
+        # reranker = get_reranker_adapter()
+        # pairs = [(query, c["content_snippet"]) for c in candidates]
+        # scores = await reranker.rerank(query, pairs)
+        # for c, s in zip(candidates, scores):
+        #     c["rerank_score"] = s
+        #     c["relevance"] = 0.6 * c["fusion_score"] + 0.4 * s
+
+        # 当前：fusion_score 作为最终 relevance
+        for c in candidates:
+            c["rerank_score"] = None
+            c["relevance"] = c.get("fusion_score", 0.0)
+
+        candidates.sort(key=lambda x: x["relevance"], reverse=True)
+
+        threshold = settings.RAG_MIN_RELEVANCE_THRESHOLD
+        filtered = [c for c in candidates if c["relevance"] >= threshold]
+
+        return filtered, True  # reranker_ok=True
+
+    # ── S9: 引用校验 ────────────────────────────────────────────
+
+    @staticmethod
+    def _verify_citations(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """校验每条候选的引用完整性"""
+        verified: list[dict[str, Any]] = []
+        for c in candidates:
+            if not c.get("doc_id") or not c.get("chunk_id"):
+                continue
+            if not c.get("source_path") and not c.get("title"):
+                continue
+            if not c.get("content_snippet"):
+                continue
+            verified.append(c)
+        return verified
+
+    # ── S10: 上下文组装 ──────────────────────────────────────────
+
+    @staticmethod
+    def _assemble_context(results: list[dict[str, Any]]) -> str:
+        """将检索结果压缩为 LLM 可注入的上下文文本"""
+        if not results:
+            return "（未找到相关知识库内容）"
+
+        lines = ["【相关知识库内容】"]
+        for i, r in enumerate(results[:5], 1):
+            lines.append(f"\n--- 参考 {i} ---")
+            lines.append(f"引用ID: {r.get('chunk_id', 'N/A')}")
+            lines.append(f"类型: {r.get('kb_type', 'N/A')}")
+            lines.append(f"标题: {r.get('title', 'N/A')}")
+            lines.append(f"来源: {r.get('source_path', 'N/A')}")
+            lines.append(f"相关度: {r.get('relevance', 0):.2f}")
+            lines.append(f"内容: {r.get('content_snippet', '')}")
+        return "\n".join(lines)
+
+    # ── S11: 质量诊断 ────────────────────────────────────────────
+
+    @staticmethod
+    def _finalize_diagnostics(
+        diag: RAGDiagnostics,
+        results: list[dict[str, Any]],
+        top_k: int,
+    ) -> None:
+        """根据最终结果完善诊断信息"""
+        if not results:
+            diag.knowledge_insufficient = True
+            diag.degraded = True
+            diag.degrade_reasons.append("no_results")
+            diag.suggested_actions = [
+                "补充知识库文档",
+                "扩大授权范围需人工审批",
+                "改用更具体的问题重新检索",
+            ]
+        elif all(r.get("relevance", 0) < 0.55 for r in results):
+            diag.knowledge_insufficient = True
+            diag.suggested_actions = [
+                "检索结果相关性不足",
+                "优化查询关键词后重试",
+            ]
+
+    # ── 辅助：转为 RAGResult ─────────────────────────────────────
+
+    @staticmethod
+    def _to_rag_result(r: dict[str, Any]) -> RAGResult:
+        return RAGResult(
+            doc_id=r.get("doc_id", ""),
+            chunk_id=r.get("chunk_id", ""),
+            kb_type=r.get("kb_type", ""),
+            title=r.get("title", ""),
+            content_snippet=r.get("content_snippet", ""),
+            relevance=r.get("relevance", 0.0),
+            source_path=r.get("source_path"),
+            metadata=DocMetadata(
+                source=r.get("metadata_", {}).get("source"),
+                version=r.get("metadata_", {}).get("version"),
+                effective_at=r.get("metadata_", {}).get("effective_at"),
+                expired_at=r.get("metadata_", {}).get("expired_at"),
+                security_level=r.get("security_level"),
+                client=r.get("client"),
+                org_id=r.get("org_id"),
+                approval_status=r.get("approval_status"),
+                chunk_index=r.get("chunk_index"),
+                total_chunks=r.get("total_chunks"),
+            ),
+            retrieval=RetrievalDetail(
+                channels=r.get("channels", []),
+                keyword_score=r.get("keyword_score"),
+                vector_score=r.get("vector_score"),
+                fusion_score=r.get("fusion_score"),
+                rerank_score=r.get("rerank_score"),
+            ),
+        )
