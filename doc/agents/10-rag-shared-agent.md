@@ -14,7 +14,7 @@ RAG 在 Hermes 中不是一个能自主推进业务状态的“主 Agent”，�
 
 RAG Orchestrator 不直接修改案件、不跳转工作流、不生成业务终态、不绕过 HITL。所有业务阶段推进仍由 LangGraph Workflow Runtime 裁决；所有业务结论仍由 Stage Agent 输出结构化建议，并经规则校验和人工守门确认。
 
-当前代码中的 `RAGEngine` 是轻量实现入口：Stage Agent 通过基类调用 `search()` 或 `get_retrieval_context()` 获取知识库内容。生产架构上，RAG 应演进为：
+`RAGOrchestrator` 是统一检索入口：Stage Agent 通过基类调用 `retrieve()` 获取完整 RAG 响应，或通过 `search()` 获取简化结果。架构如下：
 
 ```text
 Stage Agent / Conversation Gateway / Knowledge API
@@ -828,15 +828,15 @@ RAG 至少应采集以下指标：
 
 ## 十二、与当前代码的落地关系
 
-当前实现可以视为 RAG Orchestrator 的轻量版本：
+## 十二-A、演进历史
 
+v0.1 轻量版本：
 - `BaseStageAgent` 统一调用 RAG，不允许 Stage Agent 自行绕过。
-- `RAGEngine.search()` 提供旧版列表式搜索结果。
-- `RAGEngine.get_retrieval_context()` 提供 Prompt 注入文本。
-- `knowledge_documents` 保存知识文本、embedding、metadata、source_path 和 chunk 信息。
-- pgvector 和 ILIKE 是当前主要可用检索路径。
+- `RAGEngine.search()` 提供旧版列表式搜索结果（已被 `RAGOrchestrator.search()` 替换）。
+- `RAGEngine.get_retrieval_context()` 提供 Prompt 注入文本（已被 `RAGOrchestrator.retrieve().context` 替换）。
 
-当前实现状态（v1.0）：
+---
+## 十二-B、当前实现状态（v1.0）
 1. `RAGOrchestrator.retrieve()` 已实现完整 13 步流水线。
 2. `search()` 作为 `retrieve()` 的简化封装，返回旧 dict 格式。
 3. `get_retrieval_context()` 内部调用 `retrieve()` 并取 context 字段。
