@@ -115,17 +115,20 @@ _INJECTION_PATTERNS = [
 ]
 
 # 敏感信息脱敏模式
+# 注意：使用 (?<!\d)...(?!\d) 而非 \b，因为中文环境下 \b 对数字边界不可靠
 _PII_PATTERNS = [
-    (re.compile(r'\b\d{6}(19|20)\d{2}(0[1-9]|1[0-2])\d{4}\b'), "[身份证号]"),
-    (re.compile(r'\b1[3-9]\d{9}\b'), "[手机号]"),
-    (re.compile(r'\b\d{16,19}\b'), "[银行卡号]"),
+    (re.compile(r'(?<!\d)\d{6}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)'), "[身份证号]"),
+    (re.compile(r'(?<!\d)1[3-9]\d{9}(?!\d)'), "[手机号]"),
+    (re.compile(r'(?<!\d)\d{16}(?!\d)|(?<!\d)\d{19}(?!\d)'), "[银行卡号]"),
 ]
 
 
 # ═══════════════════════════════════════════════════════════════
-# Embedding 缓存
+# Embedding 缓存 (TTL + LRU，最大 1000 条，每条 ~12KB，总计 ~12MB)
 # ═══════════════════════════════════════════════════════════════
+_EMBEDDING_CACHE_MAXSIZE = 1000
 _embedding_cache: dict[str, tuple[float, list[float]]] = {}
+_cache_access_order: list[str] = []  # LRU 访问顺序
 
 
 def _cache_key(text: str) -> str:
@@ -138,10 +141,25 @@ def _embedding_cache_get(text: str) -> list[float] | None:
     if entry:
         ts, vec = entry
         if time.monotonic() - ts < settings.RAG_EMBEDDING_CACHE_TTL:
+            # LRU: move accessed key to end
+            if key in _cache_access_order:
+                _cache_access_order.remove(key)
+            _cache_access_order.append(key)
             return vec
+        # TTL 过期，删除
         del _embedding_cache[key]
+        if key in _cache_access_order:
+            _cache_access_order.remove(key)
     return None
 
 
 def _embedding_cache_set(text: str, vector: list[float]) -> None:
-    _embedding_cache[_cache_key(text)] = (time.monotonic(), vector)
+    key = _cache_key(text)
+    # LRU 淘汰：超过 maxsize 时移除最旧的条目
+    if len(_embedding_cache) >= _EMBEDDING_CACHE_MAXSIZE:
+        while _cache_access_order and len(_embedding_cache) >= _EMBEDDING_CACHE_MAXSIZE:
+            oldest = _cache_access_order.pop(0)
+            if oldest in _embedding_cache:
+                del _embedding_cache[oldest]
+    _embedding_cache[key] = (time.monotonic(), vector)
+    _cache_access_order.append(key)
