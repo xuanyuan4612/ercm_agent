@@ -37,7 +37,7 @@ dependencies = [
     "websockets>=13.0",
     "aiofiles>=24.0",
     "langfuse>=2.0.0",
-    "pypdf2>=3.0.1",
+    "pymupdf4llm>=1.27.2.3",
 ]
 
 [project.optional-dependencies]
@@ -92,3 +92,13 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "coverage>=7.14.1",
+    "mypy>=2.1.0",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.16",
+]

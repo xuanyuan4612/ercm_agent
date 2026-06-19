@@ -383,14 +383,18 @@ class KnowledgeIngestionService:
 
         if ext == "pdf":
             try:
-                from PyPDF2 import PdfReader
-                reader = PdfReader(io.BytesIO(file_content))
-                return "\n".join(
-                    page.extract_text() or ""
-                    for page in reader.pages
-                )
+                import pymupdf4llm
+                md_text = pymupdf4llm.to_markdown(io.BytesIO(file_content))
+                if md_text and md_text.strip():
+                    return md_text.strip()
+                # 如果 pymupdf4llm 返回空，降级为纯文本提取
+                import fitz
+                doc = fitz.open(stream=file_content, filetype="pdf")
+                text = "\n".join(page.get_text() for page in doc)
+                doc.close()
+                return text
             except ImportError as e:
-                raise ImportError("PyPDF2 未安装，无法解析 pdf 文件") from e
+                raise ImportError("pymupdf4llm 未安装，无法解析 pdf 文件。运行: pip install pymupdf4llm") from e
 
         raise ValueError(f"未知文件格式: {ext}")
 
