@@ -14,12 +14,18 @@ from hermes.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# ES 索引映射：中文分词 + 字段权重
-_INDEX_MAPPING: dict[str, Any] = {
-    "settings": {
+def _build_index_mapping(analyzer: str) -> dict[str, Any]:
+    """构建 ES 索引映射
+
+    Args:
+        analyzer: 分词器名 — 'ik_smart_analyzer'（需安装 ik 插件）或 'standard'（内置降级）
+    """
+    settings_block: dict[str, Any] = {
         "number_of_shards": 1,
         "number_of_replicas": 0,
-        "analysis": {
+    }
+    if analyzer == "ik_smart_analyzer":
+        settings_block["analysis"] = {
             "analyzer": {
                 "ik_smart_analyzer": {
                     "type": "custom",
@@ -27,38 +33,29 @@ _INDEX_MAPPING: dict[str, Any] = {
                     "filter": ["lowercase"],
                 },
             },
-        },
-    },
-    "mappings": {
-        "properties": {
-            "doc_id": {"type": "keyword"},
-            "chunk_id": {"type": "keyword"},
-            "kb_type": {"type": "keyword"},
-            "title": {
-                "type": "text",
-                "analyzer": "ik_smart_analyzer",
-                "boost": 3.0,  # 标题权重最高
-            },
-            "content": {
-                "type": "text",
-                "analyzer": "ik_smart_analyzer",
-                "boost": 1.0,
-            },
-            "content_snippet": {
-                "type": "text",
-                "analyzer": "ik_smart_analyzer",
-            },
-            "source_path": {"type": "keyword"},
-            "security_level": {"type": "keyword"},
-            "client": {"type": "keyword"},
-            "org_id": {"type": "keyword"},
-            "approval_status": {"type": "keyword"},
-            "chunk_index": {"type": "integer"},
-            "total_chunks": {"type": "integer"},
-            "updated_at": {"type": "date"},
         }
-    },
-}
+
+    return {
+        "settings": settings_block,
+        "mappings": {
+            "properties": {
+                "doc_id": {"type": "keyword"},
+                "chunk_id": {"type": "keyword"},
+                "kb_type": {"type": "keyword"},
+                "title": {"type": "text", "analyzer": analyzer, "boost": 3.0},
+                "content": {"type": "text", "analyzer": analyzer, "boost": 1.0},
+                "content_snippet": {"type": "text", "analyzer": analyzer},
+                "source_path": {"type": "keyword"},
+                "security_level": {"type": "keyword"},
+                "client": {"type": "keyword"},
+                "org_id": {"type": "keyword"},
+                "approval_status": {"type": "keyword"},
+                "chunk_index": {"type": "integer"},
+                "total_chunks": {"type": "integer"},
+                "updated_at": {"type": "date"},
+            }
+        },
+    }
 
 
 class SearchAdapter:
@@ -85,17 +82,34 @@ class SearchAdapter:
         return self._es is not None
 
     async def ensure_index(self) -> None:
-        """确保 ES 索引存在（不存在则创建）"""
+        """确保 ES 索引存在（不存在则创建）
+
+        优先使用 ik_smart 中文分词；ES 未安装 ik 插件时自动降级为 standard。
+        """
         if not self.available or self._initialized:
             return
         try:
             exists = await self._es.indices.exists(index=self._index_name)
             if not exists:
-                await self._es.indices.create(
-                    index=self._index_name,
-                    body=_INDEX_MAPPING,
-                )
-                logger.info("es_index_created", index=self._index_name)
+                # 先尝试 ik_smart 中文分词
+                for analyzer in ("ik_smart_analyzer", "standard"):
+                    try:
+                        await self._es.indices.create(
+                            index=self._index_name,
+                            body=_build_index_mapping(analyzer),
+                        )
+                        logger.info("es_index_created", index=self._index_name, analyzer=analyzer)
+                        break
+                    except Exception as create_err:
+                        if "ik_smart" in str(create_err):
+                            logger.info("es_ik_smart_unavailable_fallback_standard")
+                            # 删除可能残留的索引再重试
+                            try:
+                                await self._es.indices.delete(index=self._index_name, ignore=[404])
+                            except Exception:
+                                pass
+                            continue
+                        raise
             self._initialized = True
         except Exception as e:
             logger.warning("es_index_init_failed", error=str(e))
