@@ -475,13 +475,14 @@ class RAGOrchestrator:
         seen: set[str] = set()
 
         for emb in embeddings[:3]:
+            # 注意：asyncpg 不支持 ::vector 语法，必须用 CAST(:param AS vector)
             embedding_str = f"[{','.join(str(x) for x in emb)}]"
 
             try:
                 query_sql = text("""
                     SELECT id, kb_type, title,
                            substring(content, 1, 300) AS content_snippet,
-                           1.0 - (embedding <=> :emb::vector) AS vector_score,
+                           1.0 - (embedding <=> CAST(:emb AS vector)) AS vector_score,
                            source_path, chunk_index, total_chunks,
                            metadata_, security_level, client, org_id,
                            approval_status
@@ -492,7 +493,7 @@ class RAGOrchestrator:
                       AND approval_status = 'approved'
                       AND client = ANY(:clients)
                       AND security_level = ANY(:security_levels)
-                    ORDER BY embedding <=> :emb::vector
+                    ORDER BY embedding <=> CAST(:emb AS vector)
                     LIMIT :limit
                 """)
                 result = await self.db.execute(
