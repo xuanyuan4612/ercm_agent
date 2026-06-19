@@ -173,12 +173,19 @@ class RAGOrchestrator:
     """RAG 编排器 — 13 步检索流水线
 
     使用方式:
-        orch = RAGOrchestrator(db_session)
+        orch = RAGOrchestrator(db_session, es_client=app.state.es)
         response = await orch.retrieve(request)
     """
 
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        es_client: Any | None = None,
+    ) -> None:
         self.db = db
+        # SearchAdapter 延迟初始化
+        self._search_adapter: Any = None
+        self._es_client = es_client
 
     # ── 公开方法 ─────────────────────────────────────────────────
 
@@ -426,7 +433,7 @@ class RAGOrchestrator:
             if not api_key:
                 return None
 
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.post(
                     f"{settings.EMBEDDING_API_BASE}/embeddings",
                     headers={"Authorization": f"Bearer {api_key}"},
@@ -523,21 +530,54 @@ class RAGOrchestrator:
 
     # ── S5: 全文召回 ────────────────────────────────────────────
 
+    def _get_search_adapter(self) -> Any:
+        """获取 SearchAdapter（延迟初始化）"""
+        if self._search_adapter is None:
+            from hermes.integrations.search_adapter import SearchAdapter
+            self._search_adapter = SearchAdapter(self._es_client)
+        return self._search_adapter
+
     async def _keyword_recall(
         self,
         queries: list[str],
         metadata_filter: dict,
         top_k: int,
     ) -> list[dict[str, Any]]:
-        """ILIKE 全文召回（生产环境替换为 Elasticsearch）"""
+        """全文召回：优先 Elasticsearch BM25，降级为 ILIKE"""
+        adapter = self._get_search_adapter()
         recall_n = top_k * settings.RAG_RECALL_MULTIPLIER
+
+        # ── 优先：Elasticsearch 全文检索 ──
+        if adapter.available:
+            try:
+                all_results: list[dict[str, Any]] = []
+                seen: set[str] = set()
+                for q in queries[:3]:
+                    es_results = await adapter.search(
+                        query=q,
+                        kb_types=metadata_filter["kb_types"],
+                        top_k=recall_n,
+                        client_filters=metadata_filter.get("client"),
+                        security_levels=metadata_filter.get("security_levels"),
+                    )
+                    for r in es_results:
+                        if r["chunk_id"] not in seen:
+                            seen.add(r["chunk_id"])
+                            r["vector_score"] = None
+                            all_results.append(r)
+                if all_results:
+                    logger.info("es_keyword_recall_hits", count=len(all_results))
+                    return all_results
+            except Exception as e:
+                logger.warning("es_keyword_recall_failed_fallback_ilike", error=str(e))
+
+        # ── 降级：ILIKE 全文搜索 ──
         candidates: list[dict[str, Any]] = []
         seen: set[str] = set()
 
         for q in queries[:3]:
             try:
                 pattern = f"%{q}%"
-                exact_pattern = f"%{q.strip()}%"
 
                 where_clauses = [
                     KnowledgeDocument.kb_type.in_(metadata_filter["kb_types"]),
@@ -582,7 +622,6 @@ class RAGOrchestrator:
                         continue
                     seen.add(doc_id)
 
-                    # 简单 keyword_score 基于标题匹配
                     title = row[2] or ""
                     content_snippet = row[3] or ""
                     if q.lower() in title.lower():

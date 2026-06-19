@@ -56,7 +56,7 @@ class KnowledgeIngestionService:
     """知识入库服务
 
     使用方式:
-        service = KnowledgeIngestionService(db_session)
+        service = KnowledgeIngestionService(db_session, minio_client=app.state.minio, es_client=app.state.es)
         result = await service.ingest_file(
             file_content=b"...",
             filename="policy.docx",
@@ -67,8 +67,20 @@ class KnowledgeIngestionService:
         )
     """
 
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        minio_client: Any = None,
+        es_client: Any = None,
+    ) -> None:
         self.db = db
+        self._minio = minio_client
+        self._es_client = es_client
+
+    def _get_search_adapter(self) -> Any:
+        """获取 SearchAdapter（延迟初始化）"""
+        from hermes.integrations.search_adapter import SearchAdapter
+        return SearchAdapter(self._es_client)
 
     # ── 公开方法 ─────────────────────────────────────────────────
 
@@ -113,7 +125,26 @@ class KnowledgeIngestionService:
         title = filename.rsplit(".", 1)[0] if "." in filename else filename
         chunks = self._chunk_text(text)
 
-        # S6-S8: 去重检查 + 向量化 + 写入
+        # S6: 原始文件写入 MinIO
+        minio_bucket = ""
+        minio_key = ""
+        if self._minio:
+            try:
+                minio_bucket = settings.MINIO_BUCKET
+                minio_key = f"knowledge/{kb_type}/{filename}"
+                self._minio.put_object(
+                    bucket_name=minio_bucket,
+                    object_name=minio_key,
+                    data=io.BytesIO(file_content),
+                    length=len(file_content),
+                )
+                logger.info("minio_uploaded", bucket=minio_bucket, key=minio_key, size=len(file_content))
+            except Exception as e:
+                logger.warning("minio_upload_failed", filename=filename, error=str(e))
+                # MinIO 失败不阻塞入库
+
+        # S7: 去重检查 + 向量化 + 写入 PostgreSQL
+        search_adapter = self._get_search_adapter()
         doc_uuid = ""
         chunks_created = 0
         chunks_skipped = 0
@@ -157,6 +188,8 @@ class KnowledgeIngestionService:
                     "source": "manual_upload",
                     "original_filename": filename,
                     "format": ext,
+                    "minio_bucket": minio_bucket,
+                    "minio_key": minio_key,
                     "uploaded_at": datetime.now(timezone.utc).isoformat(),
                     **(metadata or {}),
                 },
@@ -167,6 +200,25 @@ class KnowledgeIngestionService:
             if not doc_uuid:
                 doc_uuid = str(doc.id)
             chunks_created += 1
+
+            # S8: 写入 Elasticsearch 全文索引（异步，失败不阻塞）
+            chunk_id = f"{doc.id}:{i + 1}"
+            await search_adapter.index_document({
+                "doc_id": str(doc.id),
+                "chunk_id": chunk_id,
+                "kb_type": kb_type,
+                "title": title,
+                "content": chunk_text,
+                "content_snippet": chunk_text[:300],
+                "source_path": filename,
+                "security_level": security_level,
+                "client": client,
+                "org_id": org_id,
+                "approval_status": "approved",
+                "chunk_index": i + 1,
+                "total_chunks": total,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
 
         logger.info(
             "ingestion_complete",
@@ -212,6 +264,9 @@ class KnowledgeIngestionService:
         if chunks:
             embedding = await self._get_embedding(chunks[0])
 
+        search_adapter = self._get_search_adapter()
+        total_chunks = max(len(chunks), 1)
+
         doc = KnowledgeDocument(
             kb_type=kb_type,
             title=title,
@@ -220,7 +275,7 @@ class KnowledgeIngestionService:
             embedding=embedding,
             source_path=f"text://{title}",
             chunk_index=1,
-            total_chunks=max(len(chunks), 1),
+            total_chunks=total_chunks,
             security_level=security_level,
             client=client,
             org_id=org_id,
@@ -234,6 +289,24 @@ class KnowledgeIngestionService:
         )
         self.db.add(doc)
         await self.db.flush()
+
+        # ES 索引：第一块
+        await search_adapter.index_document({
+            "doc_id": str(doc.id),
+            "chunk_id": f"{doc.id}:1",
+            "kb_type": kb_type,
+            "title": title,
+            "content": chunks[0] if chunks else content,
+            "content_snippet": (chunks[0] if chunks else content)[:300],
+            "source_path": f"text://{title}",
+            "security_level": security_level,
+            "client": client,
+            "org_id": org_id,
+            "approval_status": "approved",
+            "chunk_index": 1,
+            "total_chunks": total_chunks,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
 
         # 写入剩余 chunks
         for i, chunk_text in enumerate(chunks[1:], 2):
@@ -255,9 +328,28 @@ class KnowledgeIngestionService:
                 metadata_=doc.metadata_,
             )
             self.db.add(chunk_doc)
+            await self.db.flush()
+
+            # ES 索引：后续块
+            await search_adapter.index_document({
+                "doc_id": str(chunk_doc.id),
+                "chunk_id": f"{chunk_doc.id}:{i}",
+                "kb_type": kb_type,
+                "title": title,
+                "content": chunk_text,
+                "content_snippet": chunk_text[:300],
+                "source_path": f"text://{title}",
+                "security_level": security_level,
+                "client": client,
+                "org_id": org_id,
+                "approval_status": "approved",
+                "chunk_index": i,
+                "total_chunks": len(chunks),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
 
         await self.db.flush()
-        return IngestionResult(success=True, doc_id=str(doc.id), chunks_created=max(len(chunks), 1))
+        return IngestionResult(success=True, doc_id=str(doc.id), chunks_created=total_chunks)
 
     # ── 内部方法 ─────────────────────────────────────────────────
 
@@ -379,7 +471,7 @@ class KnowledgeIngestionService:
             if not api_key:
                 return None
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.post(
                     f"{settings.EMBEDDING_API_BASE}/embeddings",
                     headers={"Authorization": f"Bearer {api_key}"},

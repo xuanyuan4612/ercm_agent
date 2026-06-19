@@ -5,7 +5,8 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,27 +28,79 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/knowledge-bases")
 
-VALID_KB_TYPES = frozenset({
-    "intake", "investigation", "analysis", "disposition", "enforcement",
-    "risk_monitor", "ic_evaluation", "special_audit", "exit_audit",
-    "trade_secret", "improvement", "behavior_risk", "common",
-})
+VALID_KB_TYPES = frozenset(KB_TYPE_MAP.keys())
 
 TYPE_NAMES: dict[str, str] = {
+    # ── 廉洁监察 ──
     "intake": "初筛知识库",
     "investigation": "调查方案知识库",
     "analysis": "分析报告知识库",
     "disposition": "处置分流知识库",
     "enforcement": "处罚执行知识库",
+    # ── 风险监控 ──
+    "risk_rules": "风险规则知识库",
+    "risk_cases": "风险案例知识库",
+    "database_schema": "数据库 Schema 知识库",
+    "disposition_feedback": "处置反馈知识库",
     "risk_monitor": "风险监控知识库",
+    # ── 内控评价 ──
+    "ic_policy": "内控制度知识库",
+    "control_matrix": "控制矩阵知识库",
+    "audit_plan": "审计计划知识库",
+    "interview_template": "访谈模板知识库",
+    "deficiency_rating": "缺陷评级知识库",
     "ic_evaluation": "内控评价知识库",
+    # ── 专项审计 ──
+    "sa_plan": "专项审计计划知识库",
+    "sa_history": "专项审计历史知识库",
+    "audit_workpaper_template": "审计底稿模板知识库",
+    "improvement_suggestion": "改善建议知识库",
     "special_audit": "专项审计知识库",
+    # ── 离任审计 ──
+    "ea_plan": "离任审计计划知识库",
+    "position_duty": "岗位职责知识库",
+    "personal_risk_case": "个人风险案例知识库",
+    "business_audit_case": "业务审计案例知识库",
+    "behavioral_risk_history": "行为风险历史知识库",
     "exit_audit": "离任审计知识库",
+    # ── 商业秘密 ──
+    "trade_secret_policy": "商业秘密制度知识库",
+    "ip_policy": "知识产权制度知识库",
+    "trade_secret_law": "商业秘密法律知识库",
+    "trade_secret_cases": "商业秘密案例知识库",
+    "historical_secret_review": "历史定密评审知识库",
     "trade_secret": "商业秘密知识库",
-    "improvement": "持续改善知识库",
+    # ── 行为风险 ──
+    "behavior_policy": "行为规范制度知识库",
+    "employee_lifecycle": "员工生命周期知识库",
+    "historical_behavior_analysis": "历史行为分析知识库",
     "behavior_risk": "行为风险知识库",
+    # ── 持续改善 ──
+    "improvement_case": "改善案例知识库",
+    "rectification_template": "整改模板知识库",
+    "audit_issue_history": "审计问题历史知识库",
+    "policy_and_process": "制度与流程知识库",
+    "improvement": "持续改善知识库",
+    # ── 共享 ──
     "common": "公共知识库",
+    "law_and_regulation": "法律法规知识库",
+    "kb_integrity_policy": "廉洁制度知识库",
+    "kb_integrity_cases": "廉洁案例知识库",
 }
+
+
+# ═══════════════════════════════════════════════════════════════
+# 基础设施依赖
+# ═══════════════════════════════════════════════════════════════
+
+def _get_es_client(request: Request) -> Any:
+    """从 app.state 获取 Elasticsearch 客户端（可能为 None）"""
+    return getattr(request.app.state, "es", None)
+
+
+def _get_minio_client(request: Request) -> Any:
+    """从 app.state 获取 MinIO 客户端（可能为 None）"""
+    return getattr(request.app.state, "minio", None)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -59,6 +112,7 @@ async def retrieve_knowledge(
     request: RAGRequest,
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
+    es_client: Any = Depends(_get_es_client),
 ) -> dict[str, Any]:
     """完整 RAG 检索（13 步流水线）
 
@@ -73,7 +127,7 @@ async def retrieve_knowledge(
     if not ts.role:
         ts.role = getattr(current_user, "role", "viewer")
 
-    orch = RAGOrchestrator(db)
+    orch = RAGOrchestrator(db, es_client=es_client)
     try:
         response = await orch.retrieve(request)
     except ValueError as e:
@@ -96,6 +150,7 @@ async def retrieve_knowledge(
 async def search_knowledge(
     current_user: CurrentUser,
     db: AsyncSession = Depends(get_db),
+    es_client: Any = Depends(_get_es_client),
     query: str = Query(..., description="搜索关键词"),
     kb_types: str | None = Query(None, description="限定知识库类型，逗号分隔"),
     top_k: int = Query(5, ge=1, le=20),
@@ -112,7 +167,7 @@ async def search_knowledge(
     user_role = getattr(current_user, "role", "viewer")
 
     try:
-        orch = RAGOrchestrator(db)
+        orch = RAGOrchestrator(db, es_client=es_client)
         # 使用 retrieve() 替代 search() 以确保权限过滤生效
         request = RAGRequest(
             query=query,
@@ -183,11 +238,13 @@ async def upload_document(
     org_id: str = Query("*", description="组织 ID"),
     security_level: str = Query("internal", description="密级: public/internal/confidential/secret"),
     db: AsyncSession = Depends(get_db),
+    minio_client: Any = Depends(_get_minio_client),
+    es_client: Any = Depends(_get_es_client),
 ) -> dict[str, Any]:
     """上传知识库文档
 
     支持格式: txt, md, json, docx, pdf
-    文件自动解析、分块、向量化并写入知识库。
+    文件自动解析、分块、向量化并写入 PG + ES，原始文件存储到 MinIO。
     """
     if kb_type not in VALID_KB_TYPES:
         raise KnowledgeBaseNotFoundError(kb_type)
@@ -200,7 +257,7 @@ async def upload_document(
     if not content:
         return success({"success": False, "error": "文件内容为空"})
 
-    service = KnowledgeIngestionService(db)
+    service = KnowledgeIngestionService(db, minio_client=minio_client, es_client=es_client)
     result = await service.ingest_file(
         file_content=content,
         filename=file.filename or "unknown",
@@ -220,6 +277,7 @@ async def upload_text_knowledge(
     body: dict[str, Any],
     current_user: GroupRoleRequired,
     db: AsyncSession = Depends(get_db),
+    es_client: Any = Depends(_get_es_client),
 ) -> dict[str, Any]:
     """上传纯文本知识条目
 
@@ -234,7 +292,7 @@ async def upload_text_knowledge(
     if not title or not content:
         return success({"success": False, "error": "title 和 content 不能为空"})
 
-    service = KnowledgeIngestionService(db)
+    service = KnowledgeIngestionService(db, es_client=es_client)
     result = await service.ingest_text(
         title=title,
         content=content,
@@ -404,6 +462,60 @@ async def delete_document(
     doc.is_active = False
     await db.flush()
     return success(message=f"文档 {doc.title} 已删除")
+
+
+# ═══════════════════════════════════════════════════════════════
+# 文件下载
+# ═══════════════════════════════════════════════════════════════
+
+@router.get("/{kb_type}/documents/{doc_id}/download")
+async def download_knowledge_document(
+    kb_type: str,
+    doc_id: uuid.UUID,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    minio_client: Any = Depends(_get_minio_client),
+) -> Any:
+    """下载知识库文档的原始文件（从 MinIO）"""
+    if kb_type not in VALID_KB_TYPES:
+        raise KnowledgeBaseNotFoundError(kb_type)
+
+    result = await db.execute(
+        select(KnowledgeDocument).where(
+            KnowledgeDocument.id == doc_id,
+            KnowledgeDocument.is_active == True,
+        )
+    )
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise NotFoundError(message="文档不存在")
+
+    # 尝试从 MinIO 下载
+    minio_bucket = (doc.metadata_ or {}).get("minio_bucket", "")
+    minio_key = (doc.metadata_ or {}).get("minio_key", "")
+    if minio_client and minio_bucket and minio_key:
+        try:
+            obj = minio_client.get_object(minio_bucket, minio_key)
+            filename = (doc.metadata_ or {}).get("original_filename", doc.title)
+            return StreamingResponse(
+                obj.stream(64 * 1024),
+                media_type="application/octet-stream",
+                headers={
+                    "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
+                },
+            )
+        except Exception as e:
+            logger.warning("minio_knowledge_download_failed", doc_id=str(doc_id), error=str(e))
+
+    # 降级：无 MinIO 或文件不存在
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(
+        content=doc.content or "",
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{doc.title}.txt",
+        },
+    )
 
 
 # ═══════════════════════════════════════════════════════════════
