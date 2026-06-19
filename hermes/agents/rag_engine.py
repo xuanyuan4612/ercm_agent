@@ -205,16 +205,12 @@ class RAGOrchestrator:
         diag.query_count = len(queries)
         diag.prompt_injection_suspected = injection_suspected
 
-        # S4: Embedding 向量化
-        _t_emb = time.monotonic()  # noqa: F841 — 保留计时点，后续用于延迟统计
-        query_embeddings: list[list[float]] = []
-        embedding_available = True
-        for q in queries:
-            vec = await self._get_embedding(q)
-            if vec:
-                query_embeddings.append(vec)
-            else:
-                embedding_available = False
+        # S4: Embedding 向量化（并行请求，降低串行等待放大延迟）
+        t_emb_start = time.monotonic()
+        embedding_tasks = [self._get_embedding(q) for q in queries]
+        embedding_results = await asyncio.gather(*embedding_tasks)
+        query_embeddings = [v for v in embedding_results if v is not None]
+        embedding_available = len(query_embeddings) > 0
         if not embedding_available:
             diag.embedding_unavailable = True
             diag.degraded = True
