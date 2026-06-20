@@ -21,6 +21,11 @@ from hermes.db.models.audit import (
     ICScoreRecord,
 )
 from hermes.db.models.base import SoftDeleteMixin, TimestampMixin, UUIDMixin
+from hermes.db.models.conversation import (
+    ConversationMessage,
+    ConversationSession,
+    IntentDecision,
+)
 from hermes.db.models.compliance import (
     BehaviorRiskAnalysisReport,
     BehaviorRiskManagementReport,
@@ -106,4 +111,8 @@ __all__ = [
     "ImprovementTask",
     "ImprovementEvidence",
     "ImprovementReview",
+    # Conversation Gateway
+    "ConversationSession",
+    "ConversationMessage",
+    "IntentDecision",
 ]

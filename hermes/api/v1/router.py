@@ -8,6 +8,7 @@ from hermes.api.v1 import (
     approval,
     auth,
     cases,
+    copilot,
     documents,
     knowledge,
     risk_monitor,
@@ -20,6 +21,8 @@ api_router = APIRouter()
 
 # Agent 模块 Profile
 api_router.include_router(agents.router, tags=["agents"])
+# 对话入口（Copilot）
+api_router.include_router(copilot.router, tags=["copilot"])
 # 认证
 api_router.include_router(auth.router, tags=["auth"])
 # 案件管理

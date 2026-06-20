@@ -45,13 +45,17 @@ quality_gates:
 | Agent ID | 名称 | 角色身份 | 工作流阶段 | 复杂度 | 状态 |
 |----------|------|----------|-----------|--------|------|
 | `risk-rule-agent` | 风险规则 Agent | 风控规则师 | [6.1] 风险规则清单生成 | 🟡 中 | ⏳ 规划中 |
-| `risk-analysis-agent` | 风险分析 Agent | 风险分析师 | [6.2]-[6.4] 异常生成→主体合并→风险定性 | 🔴 高 | ⏳ 规划中 |
+| `risk-scan-agent` | 风险扫描 Agent | 风险扫描分析师 | [6.2] SQL执行 + AI初核异常 | 🔴 高 | ⏳ 规划中 |
+| `risk-merge-agent` | 风险合并 Agent | 主体识别分析师 | [6.3] 主体识别与合并去重 | 🟡 中 | ⏳ 规划中 |
+| `risk-classify-agent` | 风险定性 Agent | 风险定性分析师 | [6.4] 风险类型/等级/处置建议判定 | 🟡 中 | ⏳ 规划中 |
+
+> **架构变更说明**（2026-06-20）：原 `risk-analysis-agent` 已拆分为 `risk-scan-agent`、`risk-merge-agent`、`risk-classify-agent` 三个独立 Agent。`risk-analysis-agent` 保留为向后兼容的外观类，内部委托给上述三个 Agent。详见 [02b-risk-monitoring-architecture-analysis.md](02b-risk-monitoring-architecture-analysis.md)。
 
 ### 1.2 工作流位置
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                    风险监控 6 阶段工作流 (7×24 无人值守)            │
+│               风险监控 5 阶段工作流 + 4 智能异常哨兵 (7×24 无人值守) │
 │                                                                   │
 │  ┌─────────────────────────────────────────────────────────────┐ │
 │  │ [6.1] risk-rule-agent (风险规则Agent)                         │ │
@@ -61,23 +65,33 @@ quality_gates:
 │  └─────────────────────────────────────────────────────────────┘ │
 │     ↓                                                             │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │ [6.2] risk-analysis-agent (风险分析Agent) — 子阶段1           │ │
+│  │ [6.2] risk-scan-agent (风险扫描Agent)                         │ │
 │  │   输入: 风险清单知识库 + 业务数据 + 外部数据                    │ │
-│  │   输出: 异常数据明细 + AI初核结果                              │ │
-│  │   逻辑: 按规则SQL执行 → AI初核剔除正常业务 → 人工复核          │ │
+│  │   输出: 异常数据明细 + AI初核结果 + 哨兵标记                   │ │
+│  │   逻辑: 按规则SQL执行 → AI初核(normal/abnormal/uncertain)     │ │
 │  └─────────────────────────────────────────────────────────────┘ │
+│     ↓                                    ↓ (哨兵触发)              │
+│     │                        ┌──────────────────────────┐        │
+│     │                        │ deep_analysis_sentinel   │        │
+│     │                        │ (uncertain比例>30%)       │        │
+│     │                        └──────────────────────────┘        │
 │     ↓                                                             │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │ [6.3] risk-analysis-agent — 子阶段2                           │ │
-│  │   输入: 异常数据明细 + 透视表                                   │ │
+│  │ [6.3] risk-merge-agent (风险合并Agent)                        │ │
+│  │   输入: AI初核后的异常数据明细                                  │ │
 │  │   输出: 按主体合并的风险透视表 + 单主体风险分析报告             │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 │     ↓                                                             │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │ [6.4] risk-analysis-agent — 子阶段3                           │ │
-│  │   输入: 单主体风险分析报告                                      │ │
-│  │   输出: 风险定性报告 (类型/等级/影响/处置建议)                  │ │
+│  │ [6.4] risk-classify-agent (风险定性Agent)                     │ │
+│  │   输入: 合并后的主体风险列表                                    │ │
+│  │   输出: 风险定性报告 (类型/等级/影响/处置建议/推送目标)        │ │
 │  └─────────────────────────────────────────────────────────────┘ │
+│     ↓                                    ↓ (哨兵触发)              │
+│     │                        ┌──────────────────────────┐        │
+│     │                        │ rule_optimization_sentinel│       │
+│     │                        │ novel_risk_sentinel       │        │
+│     │                        └──────────────────────────┘        │
 │     ↓                                                             │
 │  ┌─────────────────────────────────────────────────────────────┐ │
 │  │ [6.5] 风险结果自动推送 (系统编排，非Agent)                      │ │
@@ -308,7 +322,11 @@ class RiskRuleAgentOutput(BaseModel):
 
 ## 三、风险分析 Agent（risk-analysis-agent）详细设计
 
-### 3.1 Agent 概览卡片
+> ⚠️ **架构变更**（2026-06-20）：此 Agent 已拆分为 `risk-scan-agent`、`risk-merge-agent`、`risk-classify-agent` 三个独立 Agent。`risk-analysis-agent` 保留为向后兼容的外观类，内部委托给上述三个 Agent。新代码应直接使用独立 Agent。详见 [02b-risk-monitoring-architecture-analysis.md](02b-risk-monitoring-architecture-analysis.md)。
+>
+> 新增的 3 个 Agent 详细设计见 §四、§五、§六。
+
+### 3.1 Agent 概览卡片（兼容外观）
 
 | 属性 | 值 |
 |------|-----|
@@ -613,7 +631,198 @@ async def execute_partitioned_scan(rules, business_units):
 
 ---
 
-## 四、通用生产级配置
+## 四、风险扫描 Agent（risk-scan-agent）详细设计
+
+### 4.1 Agent 概览卡片
+
+| 属性 | 值 |
+|------|-----|
+| **Agent ID** | `risk-scan-agent` |
+| **名称** | 风险扫描 Agent |
+| **所属模块** | 风险监控 |
+| **工作流阶段** | [6.2] SQL执行 + AI初核异常 |
+| **角色身份** | 风险扫描分析师（精通SQL执行和业务异常识别） |
+| **核心任务** | 执行已审核通过的风险规则SQL → 聚合结果 → AI初核将每条异常分类为 normal/abnormal/uncertain |
+| **上游** | `risk-rule-agent`（风险规则清单）+ Celery Worker（SQL预执行） |
+| **下游** | `risk-merge-agent`（主体合并） / `deep-analysis-sentinel`（uncertain过多时） |
+| **复杂度** | 🔴 高 — 数据量敏感，TB级需分区执行 |
+| **HITL守门** | ✅ 是 — AI初核结果需人工二次复核 |
+
+### 4.2 Agent 状态机
+
+```
+  ┌──────────┐   ┌─────────────────┐   ┌──────────────────┐
+  │   IDLE   │──→│ EXECUTE_FILTER  │──→│ SENTINEL_CHECK   │
+  │  初始化   │   │ SQL执行+AI初核   │   │ 哨兵条件判定      │
+  └──────────┘   └─────────────────┘   └──────┬───────────┘
+                                               │
+                                    ┌──────────┼──────────┐
+                                    │ 正常     │ uncertain│ SQL失败
+                                    ▼          │ >30%     │
+                              ┌──────────┐     ▼          ▼
+                              │ 下一阶段  │  ┌────────┐ ┌──────────┐
+                              │ entity   │  │ deep   │ │ schema   │
+                              │ _merge   │  │analysis│ │adaptation│
+                              └──────────┘  │sentinel│ │ sentinel │
+                                            └────────┘ └──────────┘
+```
+
+### 4.3 输入/输出 Schema
+
+```python
+class RiskScanAgentInput(BaseModel):
+    task_id: str
+    execution_mode: RiskExecutionMode  # scheduled / manual
+    risk_rules: list[RiskRule]         # 已审核通过的风险规则清单
+    business_data_sources: list[str]   # 业务数据库连接信息
+    external_data_sources: list[str]   # 外部数据API
+    target_business_units: list[str]   # 目标事业部
+    execution_date_range: dict | None  # 手动指定日期范围
+
+class RiskScanAgentOutput(BaseModel):
+    anomaly_records: list[AnomalyRecord]    # AI初核后的异常记录
+    anomaly_summary: dict                   # 异常汇总统计
+    ai_filter_removed_count: int            # AI初核剔除数量
+    sql_execution_summary: dict             # SQL执行汇总
+    sentinel_flags: dict                    # 哨兵标记
+    confidence: Confidence
+    processing_time_ms: int
+```
+
+### 4.4 LLM 配置
+
+| 配置项 | 值 | 说明 |
+|--------|-----|------|
+| temperature | `0.2` | 低温度，异常判断需要高一致性 |
+| max_tokens | `8192` | 批量异常数据输出较大 |
+| 超时 | `60s` | 数据量敏感，需分批处理 |
+| 分批处理 | `100条/批` | 超出则自动分多批 |
+
+### 4.5 哨兵输出
+
+scan-agent 输出中包含 `sentinel_flags` 字段，供 Graph 进行条件路由：
+
+| 哨兵标记 | 触发条件 | 路由目标 |
+|----------|---------|---------|
+| `deep_analysis_needed` | uncertain 比例 > 30% | `deep_analysis_sentinel` |
+| `schema_adaptation_needed` | SQL 执行成功率 < 95% | `schema_adaptation_sentinel` |
+
+---
+
+## 五、风险合并 Agent（risk-merge-agent）详细设计
+
+### 5.1 Agent 概览卡片
+
+| 属性 | 值 |
+|------|-----|
+| **Agent ID** | `risk-merge-agent` |
+| **名称** | 风险合并 Agent |
+| **所属模块** | 风险监控 |
+| **工作流阶段** | [6.3] 主体识别与合并去重 |
+| **角色身份** | 主体识别分析师（精通实体解析和数据匹配） |
+| **核心任务** | 从散乱的异常记录中识别同一分析主体（人/公司/联系方式），按联系方式/姓名/地址模糊匹配合并，生成单主体风险透视表 |
+| **上游** | `risk-scan-agent`（AI初核后的异常记录） |
+| **下游** | `risk-classify-agent`（风险定性） |
+| **复杂度** | 🟡 中 |
+| **复用潜力** | ⭐ 可被廉洁监察模块复用（调查阶段也需要合并关联主体） |
+
+### 5.2 合并规则
+
+```
+优先级1: 同一联系方式（电话/邮箱）→ 同一主体
+优先级2: 同一姓名/公司名（模糊匹配，含同音字、简繁体、常见拼写变体）→ 同一主体
+优先级3: 同一地址 → 同一主体
+```
+
+### 5.3 输入/输出 Schema
+
+```python
+class RiskMergeAgentInput(BaseModel):
+    task_id: str
+    anomaly_records: list[AnomalyRecord]  # AI初核后的异常记录
+    merge_config: dict                     # 合并配置
+
+class RiskMergeAgentOutput(BaseModel):
+    merged_entities: list[MergedEntityRisk]  # 合并后的主体风险列表
+    entity_merge_rationale: str              # 合并逻辑说明
+    sentinel_flags: dict                     # 哨兵标记（merge_issues_detected等）
+    confidence: Confidence
+    processing_time_ms: int
+```
+
+### 5.4 LLM 配置
+
+| 配置项 | 值 | 说明 |
+|--------|-----|------|
+| temperature | `0.2` | 低温度，主体匹配合并需高精度 |
+| max_tokens | `4096` | — |
+| 超时 | `30s` | — |
+
+---
+
+## 六、风险定性 Agent（risk-classify-agent）详细设计
+
+### 6.1 Agent 概览卡片
+
+| 属性 | 值 |
+|------|-----|
+| **Agent ID** | `risk-classify-agent` |
+| **名称** | 风险定性 Agent |
+| **所属模块** | 风险监控 |
+| **工作流阶段** | [6.4] 风险类型/等级/处置建议判定 |
+| **角色身份** | 风险定性分析师（15年审计+风控经验） |
+| **核心任务** | 综合判断风险性质/等级/影响范围，自动判定风险类型，给出处置建议和推送目标 |
+| **上游** | `risk-merge-agent`（合并后的主体风险列表） |
+| **下游** | `result_push`（结果推送）/ `rule-optimization-sentinel` / `novel-risk-sentinel` |
+| **复杂度** | 🟡 中 |
+
+### 6.2 评估维度
+
+```
+综合评估 = 岗位敏感度 × 金额大小 × 业务影响范围 × 发生频次
+
+风险类型: 合规风险 / 舞弊风险 / 商业秘密风险 / 其他
+风险等级: 高 / 中 / 低
+推送目标: integrity_supervision / internal_control_evaluation / trade_secrets / behavioral_risk / business_department
+```
+
+### 6.3 输入/输出 Schema
+
+```python
+class RiskClassifyAgentInput(BaseModel):
+    task_id: str
+    merged_entities: list[MergedEntityRisk]  # 合并后的主体风险列表
+    anomaly_summary: dict                     # 上游扫描汇总（上下文）
+    rule_optimization_signal: bool            # 来自回流分析的规则优化信号
+
+class RiskClassifyAgentOutput(BaseModel):
+    risk_classifications: list[RiskClassification]  # 风险分类列表
+    classification_summary: dict                     # 分类汇总
+    sentinel_flags: dict                             # 哨兵标记
+    confidence: Confidence
+    processing_time_ms: int
+```
+
+### 6.4 LLM 配置
+
+| 配置项 | 值 | 说明 |
+|--------|-----|------|
+| temperature | `0.3` | 中等温度，定性判断需要一定的推理灵活性 |
+| max_tokens | `4096` | — |
+| 超时 | `30s` | — |
+
+### 6.5 哨兵输出
+
+classify-agent 输出中包含 `sentinel_flags` 字段：
+
+| 哨兵标记 | 触发条件 | 路由目标 |
+|----------|---------|---------|
+| `rule_optimization_needed` | 低风险比例 > 50% 或外部优化信号 | `rule_optimization_sentinel` |
+| `novel_risk_detected` | 发现超出已有规则覆盖的风险模式 | `novel_risk_sentinel` |
+
+---
+
+## 七、通用生产级配置
 
 风险监控模块Agent复用文档01附录D中的生产级运行时配置，包括：
 - Agent健康检查规范 (§D.1)
@@ -632,3 +841,4 @@ async def execute_partitioned_scan(rules, business_units):
 | 版本 | 日期 | 修订说明 |
 |------|------|----------|
 | v1.0 | 2026-06-05 | 初始版本：覆盖风险监控模块2个Agent的完整设计 |
+| v1.1 | 2026-06-20 | 架构升级：risk-analysis-agent 拆分为 risk-scan-agent + risk-merge-agent + risk-classify-agent，新增异常哨兵机制。参照 02b-risk-monitoring-architecture-analysis.md |

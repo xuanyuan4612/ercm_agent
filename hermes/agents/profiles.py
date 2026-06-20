@@ -155,7 +155,11 @@ RISK_MONITORING_PROFILE = ModuleAgentProfile(
         require_human_review_for_push=True,
         require_human_review=True,
     ),
-    description="风险监控（主动风险扫描）模块 Agent Profile — 7×24 无人值守自动扫描",
+    description=(
+        "风险监控（主动风险扫描）模块 Agent Profile — 7×24 无人值守自动扫描。"
+        "4 Agent 架构: risk-rule-agent → risk-scan-agent → risk-merge-agent → risk-classify-agent。"
+        "含 4 个智能异常哨兵: schema_adaptation / deep_analysis / rule_optimization / novel_risk。"
+    ),
 )
 
 INTERNAL_CONTROL_EVALUATION_PROFILE = ModuleAgentProfile(
@@ -325,8 +329,37 @@ CONTINUOUS_IMPROVEMENT_PROFILE = ModuleAgentProfile(
     description="持续改善（整改跟踪）模块 Agent Profile — 全模块问题统一承接+闭环跟踪",
 )
 
+CONVERSATION_GATEWAY_PROFILE = ModuleAgentProfile(
+    profile_id="conversation-gateway-agent-profile",
+    module="conversation_gateway",
+    module_graph="conversation-gateway-graph",
+    knowledge_scopes=[
+        "kb_integrity_policy",
+        "kb_integrity_cases",
+        "kb_law_and_regulation",
+        "risk_rules",
+        "risk_cases",
+    ],
+    allowed_tools=[
+        "rag_search",
+        "case_lookup",
+        "workflow_status_lookup",
+        "permission_check",
+        "document_draft_prepare",
+        "field_extractor",
+    ],
+    quality_gates=QualityGate(
+        require_citations=True,
+        require_confidence=True,
+        require_uncertainties=True,
+        require_human_review=False,  # Gateway 只做路由，不做终态决策
+    ),
+    description="对话入口与意图路由 Agent — 统一意图识别+追问+确认，不控制工作流状态",
+)
+
 # 所有 Profile 注册表
 MODULE_PROFILES: dict[str, ModuleAgentProfile] = {
+    "conversation_gateway": CONVERSATION_GATEWAY_PROFILE,
     "integrity_supervision": INTEGRITY_SUPERVISION_PROFILE,
     "risk_monitoring": RISK_MONITORING_PROFILE,
     "internal_control_evaluation": INTERNAL_CONTROL_EVALUATION_PROFILE,

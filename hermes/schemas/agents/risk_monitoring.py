@@ -1,9 +1,11 @@
 """
 风险监控模块 — Agent 输入/输出 Schemas
 
-Agent: risk-rule-agent, risk-analysis-agent
+Agent: risk-rule-agent, risk-scan-agent, risk-merge-agent, risk-classify-agent
 
-参照: doc/agents/02-risk-monitoring-agents.md
+参照:
+  - doc/agents/02-risk-monitoring-agents.md (详细设计)
+  - doc/agents/02b-risk-monitoring-architecture-analysis.md (架构分析)
 """
 
 from __future__ import annotations
@@ -112,7 +114,7 @@ class RiskClassification(BaseModel):
 
 
 class RiskAnalysisAgentOutput(BaseModel):
-    """风险分析 Agent 输出"""
+    """风险分析 Agent 输出（向后兼容，内部委托给 3 个独立 Agent）"""
     anomaly_records: list[AnomalyRecord] = Field(default_factory=list)
     anomaly_summary: dict = Field(default_factory=dict)
     anomaly_pivot_table_doc_id: str | None = None
@@ -125,5 +127,100 @@ class RiskAnalysisAgentOutput(BaseModel):
     single_entity_reports: list[dict] = Field(default_factory=list)
 
     risk_classifications: list[RiskClassification] = Field(default_factory=list)
+    confidence: Confidence = Confidence.MEDIUM
+    processing_time_ms: int = 0
+
+
+# ═══════════════════════════════════════════════════════════════
+# risk-scan-agent — [6.2] SQL执行 + AI初核异常
+# ═══════════════════════════════════════════════════════════════
+
+class RiskScanAgentInput(BaseModel):
+    """风险扫描 Agent 输入"""
+    task_id: str
+    execution_mode: RiskExecutionMode = RiskExecutionMode.SCHEDULED
+
+    risk_rules: list[RiskRule] = Field(default_factory=list, description="已审核通过的风险规则清单")
+    business_data_sources: list[str] = Field(default_factory=list)
+    external_data_sources: list[str] = Field(default_factory=list)
+
+    target_business_units: list[str] = Field(default_factory=list)
+    execution_date_range: dict | None = Field(None, description="手动指定日期范围")
+
+
+class RiskScanAgentOutput(BaseModel):
+    """风险扫描 Agent 输出"""
+    anomaly_records: list[AnomalyRecord] = Field(default_factory=list)
+    anomaly_summary: dict = Field(default_factory=dict)
+    ai_filter_removed_count: int = 0
+    sql_execution_summary: dict = Field(default_factory=dict)
+    sentinel_flags: dict = Field(
+        default_factory=lambda: {
+            "schema_adaptation_needed": False,
+            "deep_analysis_needed": False,
+        }
+    )
+    confidence: Confidence = Confidence.MEDIUM
+    processing_time_ms: int = 0
+
+
+# ═══════════════════════════════════════════════════════════════
+# risk-merge-agent — [6.3] 主体识别与合并去重
+# ═══════════════════════════════════════════════════════════════
+
+class RiskMergeAgentInput(BaseModel):
+    """风险合并 Agent 输入"""
+    task_id: str
+    anomaly_records: list[AnomalyRecord] = Field(default_factory=list, description="AI初核后的异常记录")
+    merge_config: dict = Field(
+        default_factory=lambda: {
+            "contact_match": True,
+            "name_fuzzy_match": True,
+            "address_match": True,
+        }
+    )
+
+
+class RiskMergeAgentOutput(BaseModel):
+    """风险合并 Agent 输出"""
+    merged_entities: list[MergedEntityRisk] = Field(default_factory=list)
+    entity_merge_rationale: str = ""
+    merged_pivot_table_doc_id: str | None = None
+    single_entity_reports: list[dict] = Field(default_factory=list)
+    sentinel_flags: dict = Field(
+        default_factory=lambda: {
+            "merge_issues_detected": False,
+        }
+    )
+    confidence: Confidence = Confidence.MEDIUM
+    processing_time_ms: int = 0
+
+
+# ═══════════════════════════════════════════════════════════════
+# risk-classify-agent — [6.4] 风险类型/等级/处置建议判定
+# ═══════════════════════════════════════════════════════════════
+
+class RiskClassifyAgentInput(BaseModel):
+    """风险定性 Agent 输入"""
+    task_id: str
+    merged_entities: list[MergedEntityRisk] = Field(default_factory=list, description="合并后的主体风险列表")
+    anomaly_summary: dict = Field(default_factory=dict, description="上游扫描汇总（用于上下文）")
+    rule_optimization_signal: bool = Field(
+        default=False,
+        description="来自回流分析的规则优化信号（跨扫描累积）",
+    )
+
+
+class RiskClassifyAgentOutput(BaseModel):
+    """风险定性 Agent 输出"""
+    risk_classifications: list[RiskClassification] = Field(default_factory=list)
+    classification_summary: dict = Field(default_factory=dict)
+    sentinel_flags: dict = Field(
+        default_factory=lambda: {
+            "rule_optimization_needed": False,
+            "novel_risk_detected": False,
+            "novel_risk_description": "",
+        }
+    )
     confidence: Confidence = Confidence.MEDIUM
     processing_time_ms: int = 0
