@@ -396,18 +396,18 @@ AI 不再是直接决策者，而是生成可审查的建议。最终关键操�
 
 ## 8. 技术选型为什么这样选
 
-| 技术 | 为什么用 | 替代方案 | 更好实现 |
-|------|----------|----------|----------|
-| FastAPI | 原生异步、OpenAPI 自动生成、Python AI 生态好 | Django、Flask | 如果业务后台很重可用 Django Admin，但 AI 异步场景 FastAPI 更轻 |
-| SQLAlchemy async | 类型清晰、异步支持、和 FastAPI 配合好 | Django ORM、Tortoise ORM | 复杂查询可结合 SQLModel 或 repository/service 分层 |
-| PostgreSQL 16 | 关系数据、JSONB、分区、事务成熟 | MySQL | 风控审计数据强一致，PostgreSQL 更适合 |
-| pgvector | 与业务数据共库、权限和事务一致 | Milvus、Weaviate | 大规模向量可迁 Milvus，PostgreSQL 保留元数据 |
-| Elasticsearch | 中文全文检索、聚合、倒排索引 | PostgreSQL FTS、Solr | 结合 reranker 做二阶段排序 |
-| LangGraph | LLM 工作流、状态、条件路由、interrupt | 自研状态机、Temporal | Temporal 管外层事务，LangGraph 管 Agent |
-| RabbitMQ + Celery | 任务队列、ACK、DLX、优先级、重试 | Redis Queue、Kafka | Kafka 可补充事件流，RabbitMQ 保留任务队列 |
-| DeepSeek + Qwen | 中文能力、成本、OpenAI 兼容、主备切换 | GPT-4、文心一言 | 生产可做模型网关和灰度评估 |
-| Vue 3 + TS | 企业前端成熟、类型友好 | React | 大型管理端可继续强化组件库和权限路由 |
-| Docker Compose / K8s | D0 快速测试，P1 高可用生产 | 单机裸部署 | 生产必须走 K8s + 外部密钥 + 监控 |
+| 技术                   | 为什么用                            | 替代方案                    | 更好实现                                         |
+| -------------------- | ------------------------------- | ----------------------- | -------------------------------------------- |
+| FastAPI              | 原生异步、OpenAPI 自动生成、Python AI 生态好 | Django、Flask            | 如果业务后台很重可用 Django Admin，但 AI 异步场景 FastAPI 更轻 |
+| SQLAlchemy async     | 类型清晰、异步支持、和 FastAPI 配合好         | Django ORM、Tortoise ORM | 复杂查询可结合 SQLModel 或 repository/service 分层     |
+| PostgreSQL 16        | 关系数据、JSONB、分区、事务成熟              | MySQL                   | 风控审计数据强一致，PostgreSQL 更适合                     |
+| pgvector             | 与业务数据共库、权限和事务一致                 | Milvus、Weaviate         | 大规模向量可迁 Milvus，PostgreSQL 保留元数据              |
+| Elasticsearch        | 中文全文检索、聚合、倒排索引                  | PostgreSQL FTS、Solr     | 结合 reranker 做二阶段排序                           |
+| LangGraph            | LLM 工作流、状态、条件路由、interrupt       | 自研状态机、Temporal          | Temporal 管外层事务，LangGraph 管 Agent             |
+| RabbitMQ + Celery    | 任务队列、ACK、DLX、优先级、重试             | Redis Queue、Kafka       | Kafka 可补充事件流，RabbitMQ 保留任务队列                 |
+| DeepSeek + Qwen      | 中文能力、成本、OpenAI 兼容、主备切换          | GPT-4、文心一言              | 生产可做模型网关和灰度评估                                |
+| Vue 3 + TS           | 企业前端成熟、类型友好                     | React                   | 大型管理端可继续强化组件库和权限路由                           |
+| Docker Compose / K8s | D0 快速测试，P1 高可用生产                | 单机裸部署                   | 生产必须走 K8s + 外部密钥 + 监控                        |
 
 ---
 

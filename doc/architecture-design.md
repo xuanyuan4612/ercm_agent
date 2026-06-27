@@ -29,6 +29,7 @@
 |------|----------|
 | **工作流编排** | LangGraph 作为唯一 Workflow Runtime，使用 durable checkpointer 持久化 workflow state；HITL、驳回重跑、人工修改、恢复和阶段推进均由工作流语义管理 |
 | **知识增强** | RAG 由统一 RAG Orchestrator 编排：Elasticsearch/OpenSearch 全文召回 + Milvus 向量召回 + metadata filter + rerank + 引用追溯；pgvector 仅作为轻量/局部检索能力 |
+| **结构化数据查询** | Text2SQL 由统一 Text2SQL Orchestrator 编排：Data Catalog + Semantic Layer + Doris SQL 生成 + SQL AST 安全校验 + HITL 门禁 + 只读执行 + 结果脱敏 + 数据引用追溯 |
 | **多智能体协作** | A2A 被定义为企业事件集成协议，包含消息信封、schema_version、trace_id、idempotency_key、callback_url、签名、Outbox/Inbox 和回调确认 |
 | **外部系统集成** | 风控、OA/BPM、MDM、HR、法务、财务系统通过 Adapter 接入；所有外发事件先写 Outbox，所有回调先写 Inbox 并完成验签、去重、审计 |
 | **异步优先架构** | RabbitMQ quorum queues + Celery Worker 承担长耗时任务，Worker 写任务结果并发布完成事件，由 Workflow Runtime 恢复流程；Worker 不直接推进业务阶段 |
@@ -36,7 +37,7 @@
 | **数据分层存储** | PostgreSQL 存业务事实与审计事实；Redis 做缓存、限流、会话等热路径；MinIO 存对象与报告；Elasticsearch/OpenSearch 和 Milvus 独立承载检索负载；冷数据归档到 NAS/磁带 |
 | **水平弹性伸缩** | 所有服务均无状态设计，基于 Kubernetes 自动扩缩容；API 层 3-20 实例（HPA）；Worker 按任务类型分 9 个独立池独立扩缩 |
 | **CDN 与缓存** | Nginx 缓存层 + Redis Cluster 提供文档预览/缩略图 CDN 分发；热点查询缓存加速（5min TTL）；视频 HLS 自适应码率分段流 |
-| **可观测性** | OpenTelemetry 统一 trace/metrics/logs 接入标准，trace_id 贯穿 API、Workflow、Worker、LLM、RAG、Tool、外部系统；Prometheus/Grafana、LangFuse、Jaeger/Tempo、structlog 统一治理 |
+| **可观测性** | OpenTelemetry 统一 trace/metrics/logs 接入标准，trace_id 贯穿 API、Workflow、Worker、LLM、RAG、Text2SQL、Tool、外部系统；Prometheus/Grafana、LangFuse、Jaeger/Tempo、structlog 统一治理 |
 | **分层记忆** | L1 感知记忆 (即时上下文) → L2 会话记忆 (多轮对话) → L3 案例记忆 (案件全生命周期) → L4 组织记忆 (跨案件知识沉淀)。记忆从短到长逐层固化，支持跨案件学习与经验复用 |
 
 ### 1.3 系统边界
@@ -118,7 +119,7 @@
 | **pgvector 从业务库中拆出** | 10TB 文档量下，业务 OLTP、审计、审批和向量召回不得共库承压；Milvus Distributed 承载大规模向量检索，pgvector 只保留轻量场景。 |
 | **A2A 改成企业事件集成架构** | A2A 必须具备消息信封、schema_version、trace_id、idempotency_key、callback_url、签名、Outbox、Inbox、回调确认和审计链。 |
 | **Celery 不承担工作流语义** | Celery 是任务执行器，RabbitMQ 是消息传输层，LangGraph 才是流程状态机；Worker 完成后发布事件，由 Workflow Runtime 恢复节点。 |
-| **OpenTelemetry 优先** | trace_id 贯穿 API、Workflow、Worker、LLM、RAG、Tool、外部系统；Jaeger/Tempo、Prometheus、日志和 LangFuse 都以同一 trace 关联。 |
+| **OpenTelemetry 优先** | trace_id 贯穿 API、Workflow、Worker、LLM、RAG、Text2SQL、Tool、外部系统；Jaeger/Tempo、Prometheus、日志和 LangFuse 都以同一 trace 关联。 |
 | **LLM 不硬编码模型名** | DeepSeek、Qwen、私有模型 endpoint 均进入 Model Gateway；模型版本、路由、熔断、灰度、成本和质量评估由 Model Registry 管理。 |
 
 ---
@@ -137,7 +138,7 @@ flowchart TB
         A["1.接入与业务应用层<br/>Vue SPA / FastAPI / WebSocket / Webhook / Ingress / WAF / SSO<br/>案件 / 审批 / 任务中心 / 文档 / 权限 / 审计查询"]
         B["2.工作流运行层<br/>LangGraph Runtime / durable checkpointer / HITL interrupt+resume"]
         C["3.Agent 与模型能力层<br/>Model Gateway / Provider Adapter / Prompt Manager / Tool Registry / Memory / Evaluator"]
-        D["4.知识检索与文档智能层<br/>RAG Orchestrator / Elasticsearch or OpenSearch / Milvus / OCR / ASR / rerank"]
+        D["4.知识检索、结构化数据查询与文档智能层<br/>RAG Orchestrator / Text2SQL Orchestrator / Doris Adapter / Semantic Layer / Elasticsearch or OpenSearch / Milvus / OCR / ASR / rerank"]
         E["5.异步任务与事件集成层<br/>RabbitMQ quorum queues / Celery Worker / Outbox / Inbox / A2A Adapter / DLQ / KEDA"]
         F["6.数据与存储层<br/>PostgreSQL business facts + checkpoint / Redis hot cache / MinIO / NAS archive"]
     end
@@ -164,28 +165,28 @@ flowchart TB
 
 ### 3.2 主运行层职责与状态权威
 
-| 主运行层 | 生产职责 | 状态权威 | 关键技术 |
-|----------|----------|----------|----------|
-| **接入与业务应用层** | 前端交互、REST/WebSocket/Webhook 接入、TLS/WAF/SSO 入口、权限校验、业务命令受理、查询聚合、审批界面、任务中心、文档管理和审计查询 | PostgreSQL 中的业务事实；本层不直接推进 workflow 阶段 | Vue 3、FastAPI ASGI、Ingress/Nginx、企业 SSO/OIDC、SQLAlchemy async、RBAC |
-| **工作流运行层** | 唯一流程推进中心；负责阶段路由、HITL、重试、恢复、人工接管、节点重跑和下游事件触发 | LangGraph durable checkpoint + 业务表关联 | LangGraph、PostgreSQL checkpointer、interrupt/resume |
-| **Agent 与模型能力层** | 结构化建议生成、证据摘要、知识引用、Tool 编排、模型路由、熔断、灰度、成本和质量评估 | Agent 调用记录、Prompt/模型版本和结构化 stage_output | Model Gateway、Provider Adapter、Model Registry、Prompt Manager、Tool Registry、LangFuse |
-| **知识检索与文档智能层** | 文档解析、OCR、ASR、全文召回、向量召回、metadata filter、rerank、引用追溯和知识版本管理 | Search index + vector index + PostgreSQL knowledge metadata | Elasticsearch 9.x/OpenSearch、Milvus Distributed、unstructured.io、PaddleOCR、Whisper、Reranker |
-| **异步任务与事件集成层** | 长耗时任务执行、消息可靠投递、重试、DLQ、任务状态、队列扩缩容、Outbox/Inbox、外部系统 Adapter、A2A 消息信封、签名、幂等和回调确认 | task_state、event_outbox、event_inbox、外部同步日志；不裁决业务终态 | RabbitMQ quorum queues、Celery、KEDA、Adapter、Webhook、HMAC |
-| **数据与存储层** | 业务事实、审计事实、workflow checkpoint、对象文件、报告、缓存、归档、备份和恢复 | PostgreSQL、MinIO、Redis、NAS/归档存储；PostgreSQL 是业务事实和 checkpoint 权威 | PostgreSQL 18/17/16、CloudNativePG/Patroni、Redis Cluster、MinIO Operator、PgBouncer、WAL 归档 |
+| 主运行层             | 生产职责                                                                               | 状态权威                                                            | 关键技术                                                                                       |
+| ---------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| **接入与业务应用层**     | 前端交互、REST/WebSocket/Webhook 接入、TLS/WAF/SSO 入口、权限校验、业务命令受理、查询聚合、审批界面、任务中心、文档管理和审计查询 | PostgreSQL 中的业务事实；本层不直接推进 workflow 阶段                           | Vue 3、FastAPI ASGI、Ingress/Nginx、企业 SSO/OIDC、SQLAlchemy async、RBAC                         |
+| **工作流运行层**       | 唯一流程推进中心；负责阶段路由、HITL、重试、恢复、人工接管、节点重跑和下游事件触发                                        | LangGraph durable checkpoint + 业务表关联                            | LangGraph、PostgreSQL checkpointer、interrupt/resume                                         |
+| **Agent 与模型能力层** | 结构化建议生成、证据摘要、知识引用、共享能力调用编排、模型路由、熔断、灰度、成本和质量评估                                       | Agent 调用记录、Prompt/模型版本和结构化 stage_output                         | Model Gateway、Provider Adapter、Model Registry、Prompt Manager、Tool Registry、LangFuse        |
+| **知识检索、结构化数据查询与文档智能层**   | 文档解析、OCR、ASR、全文召回、向量召回、metadata filter、rerank、结构化数仓查询、Doris SQL 生成与校验、引用追溯和知识/口径版本管理                          | Search index + vector index + PostgreSQL knowledge metadata + Text2SQL 查询记录     | RAG Orchestrator、Text2SQL Orchestrator、Doris Adapter、Semantic Layer、Elasticsearch 9.x/OpenSearch、Milvus Distributed、unstructured.io、PaddleOCR、Whisper、Reranker |
+| **异步任务与事件集成层**   | 长耗时任务执行、消息可靠投递、重试、DLQ、任务状态、队列扩缩容、Outbox/Inbox、外部系统 Adapter、A2A 消息信封、签名、幂等和回调确认     | task_state、event_outbox、event_inbox、外部同步日志；不裁决业务终态              | RabbitMQ quorum queues、Celery、KEDA、Adapter、Webhook、HMAC                                    |
+| **数据与存储层**       | 业务事实、审计事实、workflow checkpoint、对象文件、报告、缓存、归档、备份和恢复                                  | PostgreSQL、MinIO、Redis、NAS/归档存储；PostgreSQL 是业务事实和 checkpoint 权威 | PostgreSQL 18/17/16、CloudNativePG/Patroni、Redis Cluster、MinIO Operator、PgBouncer、WAL 归档    |
 
 ### 3.2.1 横切治理面
 
 | 横切治理面 | 覆盖范围 | 生产落地要求 | 关键技术 |
 |------------|----------|--------------|----------|
-| **安全与权限治理** | API、Workflow、Agent、RAG、对象存储、外部回调、运维入口 | SSO、RBAC、租户隔离、PostgreSQL RLS、敏感字段列级加密、对象服务端加密、短期预签名 URL、Webhook 验签、密钥托管、append-only 审计 | 企业 SSO/OIDC、RBAC、RLS、Vault/KMS、External Secrets Operator、HMAC、audit_log 分区表 |
-| **可观测性与质量治理** | API、Workflow、Worker、LLM、RAG、Tool、外部系统调用 | trace_id 贯穿全链路；统一采集 logs/metrics/traces；监控 LLM token、Prompt 版本、RAG 命中、Agent 通过率、人工驳回率和成本 | OpenTelemetry、Prometheus、Grafana、Jaeger/Tempo、LangFuse、structlog |
+| **安全与权限治理** | API、Workflow、Agent、RAG、Text2SQL、对象存储、外部回调、运维入口 | SSO、RBAC、租户隔离、PostgreSQL RLS、Text2SQL 数据域策略、敏感字段列级加密、对象服务端加密、短期预签名 URL、Webhook 验签、密钥托管、append-only 审计 | 企业 SSO/OIDC、RBAC、RLS、Vault/KMS、External Secrets Operator、HMAC、audit_log 分区表 |
+| **可观测性与质量治理** | API、Workflow、Worker、LLM、RAG、Text2SQL、Tool、外部系统调用 | trace_id 贯穿全链路；统一采集 logs/metrics/traces；监控 LLM token、Prompt 版本、RAG 命中、Text2SQL 成功率和审批驳回率、Agent 通过率、人工驳回率和成本 | OpenTelemetry、Prometheus、Grafana、Jaeger/Tempo、LangFuse、structlog |
 | **平台与交付治理** | 应用服务、状态型组件、发布流水线、镜像、依赖、备份恢复 | Kubernetes 作为生产运行平台；状态型组件优先 Operator；Helm/GitOps 管理部署；镜像扫描、SBOM、漏洞治理、容量压测和灾备演练纳入门禁 | Kubernetes、CloudNativePG/Patroni、ECK/OpenSearch Operator、MinIO Operator、Prometheus Operator、Helm、Argo CD/GitLab CI |
 
 ### 3.3 核心运行契约
 
 1. API 收到请求后，只创建业务命令、业务事实或 workflow 实例，不直接跳阶段。
 2. Workflow Runtime 读取业务上下文，调用 Agent 或派发异步任务。
-3. Agent 通过 RAG 和 Tool Registry 生成结构化阶段输出，不直接修改案件终态。
+3. Agent 通过 RAG、Text2SQL 和 Tool Registry 生成结构化阶段输出，不直接修改案件终态。
 4. 长任务进入 RabbitMQ，由 Celery Worker 执行；Worker 写任务结果并发布完成事件。
 5. Workflow Runtime 消费任务完成事件并恢复对应节点。
 6. 高风险节点通过 LangGraph interrupt 暂停，等待人工审批。
@@ -268,13 +269,13 @@ flowchart TB
 │  │  所有处理结果 → Elasticsearch/OpenSearch 全文索引 + Milvus 向量索引             │     │
 │  └──────────────────────────────────────────────────────────────────────────┘     │
 ├──────────────────────────────────────────────────────────────────────────────────┤
-│                        Agent 核心层 (LLM 推理 + RAG + 搜索)                         │
+│                        Agent 核心层 (LLM 推理 + 共享能力编排 + 结构化输出)             │
 │  ┌──────────────────────────────────────────────────────────────────────────┐     │
 │  │  ┌──────────────┐  ┌───────────────┐  ┌───────────────┐  ┌───────────┐  │     │
 │  │  │ LLM Adapter  │  │ RAG Engine    │  │ Tool System   │  │ Prompt    │  │     │
 │  │  │ Model Gateway│  │ Milvus        │  │ 语音转文字     │  │ Manager   │  │     │
 │  │  │ 多Provider   │  │ 向量集合       │  │ 文档解析      │  │ YAML模板  │  │     │
-│  │  │ LangFuse追踪 │  │ Embedding     │  │ SQL 分析      │  │ 版本化     │  │     │
+│  │  │ LangFuse追踪 │  │ Embedding     │  │ Text2SQL      │  │ 版本化     │  │     │
 │  │  │ 优先级队列    │  │ Re-ranking    │  │ 图像识别      │  │ 热加载    │  │     │
 │  │  │ 速率限制     │  │ 混合检索(ES)  │  │ ES 全文检索    │  └───────────┘  │     │
 │  │  └──────────────┘  └───────────────┘  │ 报告生成      │                  │     │
@@ -357,7 +358,8 @@ flowchart TB
 | **网关层** | RESTful API 暴露、WebSocket 推送、Webhook 接收、文件上传代理 | FastAPI Router Pool (K8s HPA), JWT 中间件 | Service 层, RabbitMQ |
 | **工作流引擎层** | 工作流调度、状态管理、碳基守门流转 | LangGraph StateGraph, PostgreSQL durable checkpointer, Redis 热缓存 | Agent 核心层, 异步任务层 |
 | **多模态处理层** | 音频/图像/视频/文档的 AI 处理、文本提取、结构化转换 | Whisper, PaddleOCR, CLIP, OpenCV, unstructured.io | MinIO, RabbitMQ, GPU |
-| **Agent 核心层** | LLM 推理、知识检索、Tool 调用、Prompt 管理、结构化输出 | Model Gateway, RAG Orchestrator, Milvus, Elasticsearch/OpenSearch, Tool Registry | 工作流层, 检索层, 多模态处理层 |
+| **Agent 核心层** | LLM 推理、共享能力编排、Tool 调用、Prompt 管理、结构化输出 | Model Gateway, Tool Registry, Prompt Manager | 工作流层, 知识检索与结构化数据查询层, 多模态处理层 |
+| **知识检索与结构化数据查询层** | RAG 知识检索、Text2SQL 数仓查询、Doris SQL 生成与校验、Semantic Layer 口径解析、引用追溯 | RAG Orchestrator, Text2SQL Orchestrator, Doris Adapter, Semantic Layer, Milvus, Elasticsearch/OpenSearch | Agent 核心层, 数据分层存储层, 数据仓库 |
 | **集成层** | 外部系统协议适配、A2A 企业事件通信 | System Adapters, A2A Bus, Outbox/Inbox, Webhook 签名 | 外部系统 |
 | **中间件层** | 横切关注点：认证、审计、权限过滤、限流 | FastAPI Middleware Stack | — |
 | **数据分层存储层** | 业务事实、审计、全文索引、向量索引、缓存、文件、冷归档、消息队列、Worker Pool | PostgreSQL HA, Redis Cluster, MinIO, NAS/磁带, Elasticsearch/OpenSearch, Milvus, RabbitMQ, Celery Worker Pool | — |
@@ -702,6 +704,7 @@ flowchart TB
 | **统一认证 (JWT + RBAC)** | 三级角色（集团/科沃斯/添可），行级数据过滤，所有 API 路由自动注入；Token 黑名单 Redis Cluster 全局同步 | 全部模块 |
 | **审计日志** | 全量操作记录（操作人、时间、IP、内容、结果），不可删除篡改；ES 索引保留 1 年可搜索，归档保留 10 年 | 全部模块 |
 | **知识库引擎 (RAG)** | RAG Orchestrator 统一编排 Elasticsearch/OpenSearch 全文召回 + Milvus 向量召回 + metadata filter + rerank + 引用追溯 | 全部模块 |
+| **结构化数据查询 (Text2SQL)** | Text2SQL Orchestrator 统一编排 Data Catalog / Semantic Layer / Doris SQL 生成 / SQL AST 安全校验 / HITL 门禁 / 只读执行 / 数据引用 | 全部模块 |
 | **多模态处理服务** | 音频/图像/视频/文档 四管道异步处理，文本提取 + 结构化 + 索引 | 全部模块 |
 | **全文搜索 (Search Adapter)** | 跨案件/文档/证据/聊天记录统一全文检索；生产默认 Elasticsearch 9.x，许可或开源策略限制时切换 OpenSearch | 全部模块 |
 | **向量检索 (Milvus)** | 知识库、证据、历史案例向量召回；集合按模块和租户隔离，PostgreSQL 仅保存知识元数据和索引版本 | 全部模块 |
@@ -778,7 +781,7 @@ flowchart TB
 | 组件 | 选型 | 用途 |
 |------|------|------|
 | **LLM 追踪** | LangFuse | Agent 节点 Token 消耗、LLM 延迟 P50/P95/P99、Tool 成功率、KB 检索命中率、Prompt 版本追踪 |
-| **统一遥测标准** | OpenTelemetry | trace_id 贯穿 API、Workflow、Worker、LLM、RAG、Tool、外部系统 |
+| **统一遥测标准** | OpenTelemetry | trace_id 贯穿 API、Workflow、Worker、LLM、RAG、Text2SQL、Tool、外部系统 |
 | **系统监控** | Prometheus + Grafana | API QPS/P95 延迟/错误率、PG 连接池、Redis 命中率、RabbitMQ 深度、Celery 统计、K8s Pod/GPU 资源、搜索与向量库延迟 |
 | **业务日志** | structlog | 结构化 JSON 日志，traceId 链路追踪，敏感字段自动脱敏；ES 索引 1 年 |
 | **分布式追踪** | Jaeger / Tempo | OpenTelemetry trace backend，支持跨服务调用链追踪、瓶颈分析和服务依赖图 |
@@ -1402,7 +1405,7 @@ Workflow Runtime: 读取命令 → graph.invoke/resume(state, config={"configura
     │   ├── 每阶段: KB检索 → LLM推理 → 结构化 stage_output → interrupt → 守门 → resume
     │   ├── investigation: 调查方案生成任务 (→ report_queue, Celery异步；完成事件恢复 workflow)
     │   ├── analysis: 多维数据分析 + 报告撰写
-    │   │   ├── Tool: SQL数据分析 (sync_queue, Celery异步)
+    │   │   ├── Text2SQL: Doris 数仓只读查询 (SQL 生成/校验/HITL/执行, sync_queue 或异步队列)
     │   │   ├── Tool: 语音转文字查询 (多模态结果, ES+PG)
     │   │   ├── Tool: 全文检索证据 (Elasticsearch/OpenSearch)
     │   │   ├── Tool: 图像/证据相似检索 (Milvus 向量检索)
@@ -1438,7 +1441,7 @@ Workflow Runtime: 读取命令 → graph.invoke/resume(state, config={"configura
 | **通信保密性** | 传输层加密 | HTTPS (TLS 1.2+)；内网服务间 mTLS；API 限流 (全局 1000/s + 用户 100/min) |
 | **数据保密性** | 敏感字段加密存储 | AES-256-GCM 列级加密（姓名/电话/邮箱）；P1 密钥由 Vault/External Secrets 注入；MinIO SSE-S3 文件加密 |
 | **数据分级保护** | 10TB 数据分类管控 | 密级标记：公开/内部/秘密/机密四级；敏感文件访问独立审计；机密级下载需风控负责人审批 |
-| **AI 安全** | 防止 LLM 越权和幻觉 | Prompt 注入防护、RAG 租户过滤、Tool 权限矩阵、法规/证据引用强制校验；高风险输出进入人工复核 |
+| **AI 安全** | 防止 LLM 越权和幻觉 | Prompt 注入防护、RAG 租户过滤、Text2SQL 数据域策略与 SQL AST 安全校验、Tool 权限矩阵、法规/证据引用强制校验；高风险输出进入人工复核 |
 | **软件容错** | 关键节点失败处理 | StageNode 最大重试 3 次 → human_intervention → 告警+人工接管；RabbitMQ 自动重试 + DLX 死信队列 |
 | **资源控制** | 防止资源滥用 | 混合限流（全局 1000/s + 用户 100/min + LLM 令牌桶 50/s）；文件上传 500MB；PgBouncer pool_size=500 |
 | **数据备份** | 数据可恢复 | PG 每日全量 + WAL 连续归档 (MinIO + NAS 双副本)；Redis AOF+RDB；MinIO EC 12+4 冗余 |
@@ -2385,6 +2388,7 @@ Provider 模型升级（例如 DeepSeek 或 Qwen 的一个具体模型版本升�
 |------|----------|----------|
 | Prompt 注入 | 系统提示隔离、用户输入标记、拒绝执行"忽略规则/越权访问/伪造身份"类指令 | 红队用例全通过 |
 | RAG 越权 | 检索前强制注入 `client`、密级和字段权限过滤；引用跨租户文档直接阻断 | 越权召回率 = 0 |
+| Text2SQL 越权 | 请求必须携带模块、阶段、租户、角色、数据域；Doris SQL 经 AST 校验、策略注入后二次校验、HITL 审批和 SQL hash 绑定后才允许只读执行 | 越权执行率 = 0 |
 | 工具越权 | Tool 权限矩阵按角色、模块、阶段控制；高风险 Tool（SQL、导出、外部推送）需审批或只读沙箱 | 工具调用审计完整 |
 | 幻觉/事实性 | 法规、制度、证据和金额必须带来源引用；无法校验时标注"待人工核实" | 黄金评测集法规/证据引用准确率 ≥ 95% |
 | 输出质量漂移 | 50 个标准 Prompt 扩展为模块黄金集；比较格式、结论、置信度、引用和人工评分 | 质量下降即阻断灰度 |

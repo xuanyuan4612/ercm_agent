@@ -195,12 +195,12 @@ intake-agent ──(案件上下文JSON)──→ investigation-agent
 
 ### 2.3 瓶颈识别
 
-| 瓶颈点 | 风险 | 缓解措施 |
-|--------|------|----------|
-| `analysis-agent` 多工具调用串行 | P95延迟可能超60s | SQL、Search Adapter、Milvus 三路检索并行化；报告生成与 LLM 推理流水线化 |
-| `enforcement-agent` 多路A2A通信 | 任一外部Agent超时阻塞整体流程 | A2A通信异步化，发送即返回task_id，后续通过回调/轮询获取结果 |
-| KB检索串行调用>3次 | 累积延迟超5s | 同类型检索合并为批量调用；增加Redis缓存层(5min TTL) |
-| LLM推理排队 | 高并发时llm_queue深度过大 | 按案件优先级调度；intake-agent优先于enforcement-agent |
+| 瓶颈点                         | 风险                | 缓解措施                                               |
+| --------------------------- | ----------------- | -------------------------------------------------- |
+| `analysis-agent` 多工具调用串行    | P95延迟可能超60s       | SQL、Search Adapter、Milvus 三路检索并行化；报告生成与 LLM 推理流水线化 |
+| `enforcement-agent` 多路A2A通信 | 任一外部Agent超时阻塞整体流程 | A2A通信异步化，发送即返回task_id，后续通过回调/轮询获取结果                |
+| KB检索串行调用>3次                 | 累积延迟超5s           | 同类型检索合并为批量调用；增加Redis缓存层(5min TTL)                  |
+| LLM推理排队                     | 高并发时llm_queue深度过大 | 按案件优先级调度；intake-agent优先于enforcement-agent          |
 
 ---
 

@@ -30,7 +30,7 @@ Module Graph
 Agent Runtime
   ↓ 加载 Module Agent Profile
 Stage Agent
-  ↓ 调用 RAG / Tool / Model Gateway
+  ↓ 调用 RAG / Text2SQL / Tool / Model Gateway
 结构化 stage_output
   ↓
 LangGraph interrupt / HITL
@@ -44,7 +44,7 @@ Module Graph 继续推进
 | **Module Agent Profile** | 否，配置对象 | 绑定模块知识范围、工具权限、Prompt 包、模型路由和输出 schema | 不自行决策案件状态 |
 | **Agent Runtime** | 否，服务层 | 装配上下文、调用模型、校验 schema、记录 trace、处理重试和降级 | 不承载业务阶段语义 |
 | **Stage Agent** | 是 | 在单一阶段内生成结构化建议和证据引用 | 不直接执行处罚、扣款、移交、外部写入 |
-| **Shared Tool/Agent** | 视能力而定 | OCR、ASR、RAG、报告生成、审计方案、访谈、检查等复用能力 | 不越权访问其它模块数据 |
+| **Shared Tool/Agent** | 视能力而定 | OCR、ASR、RAG、Text2SQL、报告生成、审计方案、访谈、检查等复用能力 | 不越权访问其它模块数据 |
 
 ---
 
@@ -164,6 +164,7 @@ Profile 的生产要求：
 | 审计检查 Agent | [03-internal-control-evaluation-agents.md](03-internal-control-evaluation-agents.md) | 内控评价、专项审计、离任审计 | 共享检查逻辑，按模块配置检查目标和证据类型 |
 | 访谈 Agent | [03-internal-control-evaluation-agents.md](03-internal-control-evaluation-agents.md) | 廉洁监察、内控评价、专项审计、离任审计 | 共享人员匹配、问卷生成、纪要摘要能力 |
 | RAG Orchestrator | 系统架构设计 | 全部模块 | 统一检索、过滤、重排、引用追溯 |
+| Text2SQL Orchestrator | [11-text2sql-shared-agent.md](11-text2sql-shared-agent.md) | 全部模块 | 统一自然语言数仓查询、Doris SQL 生成、AST 安全校验、HITL 门禁、只读执行和数据引用 |
 | 文档生成 Tool | 系统架构设计 | 全部模块 | 通过模板 ID 和输出 schema 生成 Word/Excel/PDF |
 | A2A Adapter | 系统架构设计 | 廉洁监察、风险监控、商业秘密、行为风险、持续改善 | 外部任务统一走 Outbox/Inbox、签名、幂等和回调确认 |
 
@@ -190,5 +191,4 @@ Profile 的生产要求：
 | 检索不可用 | Search 或 Milvus 不可用时 Agent 输出知识不足，不得编造结论 |
 | 模型切换 | 主 provider 不可用时由 Model Gateway 熔断并切换备用 provider |
 | 幂等重试 | 同一 `case_id + stage + idempotency_key` 重试不会产生重复报告或重复外发任务 |
-| trace 贯穿 | API、Workflow、Agent、Tool、LLM、RAG、Worker、外部回调能通过同一 trace_id 串联 |
-
+| trace 贯穿 | API、Workflow、Agent、Tool、LLM、RAG、Text2SQL、Worker、外部回调能通过同一 trace_id 串联 |

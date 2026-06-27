@@ -17,6 +17,7 @@
 | 08 持续改善 | [08-continuous-improvement-agents.md](08-continuous-improvement-agents.md) | 问题录入、计划初审、证据复核、关闭验收、经验沉淀 |
 | 09 对话入口 | [09-conversation-gateway-agent.md](09-conversation-gateway-agent.md) | 用户对话、意图识别、信息追问、动作预览、权限预检、业务路由 |
 | 10 RAG 共享 Agent | [10-rag-shared-agent.md](10-rag-shared-agent.md) | 全模块统一检索、权限过滤、混合召回、重排、引用追溯、上下文组装 |
+| 11 Text2SQL 共享 Agent | [11-text2sql-shared-agent.md](11-text2sql-shared-agent.md) | 全模块统一自然语言数仓查询、Doris SQL 生成、安全校验、HITL 门禁、只读执行、数据引用 |
 
 ## 统一落地原则
 
