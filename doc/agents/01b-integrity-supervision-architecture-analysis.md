@@ -4,8 +4,10 @@
 > **模块编号**：01
 > **模块名称**：廉洁监察（反舞弊调查）
 > **依赖文档**：[Agent 架构总则](00-agent-architecture.md) | [廉洁监察 Agent 详细设计](01-integrity-supervision-agents.md) | [风险监控架构分析](02b-risk-monitoring-architecture-analysis.md)
-> **文档版本**：v1.0
-> **最后更新**：2026-06-20
+> **文档版本**：v1.1
+> **最后更新**：2026-06-28
+
+> **状态说明**：本文档保留为架构分析与方案论证材料。其生产落地结论（Pipeline + HITL + 证据驱动回退循环、并行辅助 Agent、复杂度评估器、非 Supervisor 约束）已合入 [01-integrity-supervision-agents.md](01-integrity-supervision-agents.md)，后续实施以 01 主设计文档为准。
 
 ---
 

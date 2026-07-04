@@ -25,20 +25,20 @@
 
 ### 1.2 核心架构能力
 
-| 维度 | 能力描述 |
-|------|----------|
-| **工作流编排** | LangGraph 作为唯一 Workflow Runtime，使用 durable checkpointer 持久化 workflow state；HITL、驳回重跑、人工修改、恢复和阶段推进均由工作流语义管理 |
-| **知识增强** | RAG 由统一 RAG Orchestrator 编排：Elasticsearch/OpenSearch 全文召回 + Milvus 向量召回 + metadata filter + rerank + 引用追溯；pgvector 仅作为轻量/局部检索能力 |
-| **结构化数据查询** | Text2SQL 由统一 Text2SQL Orchestrator 编排：Data Catalog + Semantic Layer + Doris SQL 生成 + SQL AST 安全校验 + HITL 门禁 + 只读执行 + 结果脱敏 + 数据引用追溯 |
-| **多智能体协作** | A2A 被定义为企业事件集成协议，包含消息信封、schema_version、trace_id、idempotency_key、callback_url、签名、Outbox/Inbox 和回调确认 |
-| **外部系统集成** | 风控、OA/BPM、MDM、HR、法务、财务系统通过 Adapter 接入；所有外发事件先写 Outbox，所有回调先写 Inbox 并完成验签、去重、审计 |
-| **异步优先架构** | RabbitMQ quorum queues + Celery Worker 承担长耗时任务，Worker 写任务结果并发布完成事件，由 Workflow Runtime 恢复流程；Worker 不直接推进业务阶段 |
-| **多模态处理管道** | 独立处理管线：音频（Whisper ASR + 说话人分离）、图像（PaddleOCR + CLIP 分类）、视频（OpenCV 关键帧 + 场景分析）、文档（unstructured.io PDF/Office 解析）；GPU 加速处理 |
-| **数据分层存储** | PostgreSQL 存业务事实与审计事实；Redis 做缓存、限流、会话等热路径；MinIO 存对象与报告；Elasticsearch/OpenSearch 和 Milvus 独立承载检索负载；冷数据归档到 NAS/磁带 |
-| **水平弹性伸缩** | 所有服务均无状态设计，基于 Kubernetes 自动扩缩容；API 层 3-20 实例（HPA）；Worker 按任务类型分 9 个独立池独立扩缩 |
-| **CDN 与缓存** | Nginx 缓存层 + Redis Cluster 提供文档预览/缩略图 CDN 分发；热点查询缓存加速（5min TTL）；视频 HLS 自适应码率分段流 |
-| **可观测性** | OpenTelemetry 统一 trace/metrics/logs 接入标准，trace_id 贯穿 API、Workflow、Worker、LLM、RAG、Text2SQL、Tool、外部系统；Prometheus/Grafana、LangFuse、Jaeger/Tempo、structlog 统一治理 |
-| **分层记忆** | L1 感知记忆 (即时上下文) → L2 会话记忆 (多轮对话) → L3 案例记忆 (案件全生命周期) → L4 组织记忆 (跨案件知识沉淀)。记忆从短到长逐层固化，支持跨案件学习与经验复用 |
+| 维度          | 能力描述                                                                                                                                                        |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **工作流编排**   | LangGraph 作为唯一 Workflow Runtime，使用 durable checkpointer 持久化 workflow state；HITL、驳回重跑、人工修改、恢复和阶段推进均由工作流语义管理                                                  |
+| **知识增强**    | RAG 由统一 RAG Orchestrator 编排：Elasticsearch/OpenSearch 全文召回 + Milvus 向量召回 + metadata filter + rerank + 引用追溯；pgvector 仅作为轻量/局部检索能力                             |
+| **结构化数据查询** | Text2SQL 由统一 Text2SQL Orchestrator 编排：Data Catalog + Semantic Layer + Doris SQL 生成 + SQL AST 安全校验 + HITL 门禁 + 只读执行 + 结果脱敏 + 数据引用追溯                          |
+| **多智能体协作**  | A2A 被定义为企业事件集成协议，包含消息信封、schema_version、trace_id、idempotency_key、callback_url、签名、Outbox/Inbox 和回调确认                                                          |
+| **外部系统集成**  | 风控、OA/BPM、MDM、HR、法务、财务系统通过 Adapter 接入；所有外发事件先写 Outbox，所有回调先写 Inbox 并完成验签、去重、审计                                                                              |
+| **异步优先架构**  | RabbitMQ quorum queues + Celery Worker 承担长耗时任务，Worker 写任务结果并发布完成事件，由 Workflow Runtime 恢复流程；Worker 不直接推进业务阶段                                                 |
+| **多模态处理管道** | 独立处理管线：音频（Whisper ASR + 说话人分离）、图像（PaddleOCR + CLIP 分类）、视频（OpenCV 关键帧 + 场景分析）、文档（unstructured.io PDF/Office 解析）；GPU 加速处理                                     |
+| **数据分层存储**  | PostgreSQL 存业务事实与审计事实；Redis 做缓存、限流、会话等热路径；MinIO 存对象与报告；Elasticsearch/OpenSearch 和 Milvus 独立承载检索负载；冷数据归档到 NAS/磁带                                             |
+| **水平弹性伸缩**  | 所有服务均无状态设计，基于 Kubernetes 自动扩缩容；API 层 3-20 实例（HPA）；Worker 按任务类型分 9 个独立池独立扩缩                                                                                  |
+| **CDN 与缓存** | Nginx 缓存层 + Redis Cluster 提供文档预览/缩略图 CDN 分发；热点查询缓存加速（5min TTL）；视频 HLS 自适应码率分段流                                                                              |
+| **可观测性**    | OpenTelemetry 统一 trace/metrics/logs 接入标准，trace_id 贯穿 API、Workflow、Worker、LLM、RAG、Text2SQL、Tool、外部系统；Prometheus/Grafana、LangFuse、Jaeger/Tempo、structlog 统一治理 |
+| **上下文与记忆生命周期** | L1 调用上下文 (单次 Agent 输入) + L2 阶段交互记忆 (多轮人机交互) + L3 案件事实记忆 (approved 案件全生命周期) + L4 组织知识记忆 (审核后的跨案件知识沉淀)。运行关系是按需召回 + 受控提升，而不是无条件逐层复制 |
 
 ### 1.3 系统边界
 
@@ -113,14 +113,14 @@
 
 ### 2.3 生产架构关键修正
 
-| 修正项 | 生产落地口径 |
-|--------|--------------|
-| **Redis Checkpointer 改为 durable checkpointer** | 生产 HITL 必须能长期暂停和恢复，PostgreSQL durable checkpointer 为权威；Redis 只做热路径缓存和临时加速。 |
-| **pgvector 从业务库中拆出** | 10TB 文档量下，业务 OLTP、审计、审批和向量召回不得共库承压；Milvus Distributed 承载大规模向量检索，pgvector 只保留轻量场景。 |
-| **A2A 改成企业事件集成架构** | A2A 必须具备消息信封、schema_version、trace_id、idempotency_key、callback_url、签名、Outbox、Inbox、回调确认和审计链。 |
-| **Celery 不承担工作流语义** | Celery 是任务执行器，RabbitMQ 是消息传输层，LangGraph 才是流程状态机；Worker 完成后发布事件，由 Workflow Runtime 恢复节点。 |
-| **OpenTelemetry 优先** | trace_id 贯穿 API、Workflow、Worker、LLM、RAG、Text2SQL、Tool、外部系统；Jaeger/Tempo、Prometheus、日志和 LangFuse 都以同一 trace 关联。 |
-| **LLM 不硬编码模型名** | DeepSeek、Qwen、私有模型 endpoint 均进入 Model Gateway；模型版本、路由、熔断、灰度、成本和质量评估由 Model Registry 管理。 |
+| 修正项                                            | 生产落地口径                                                                                                         |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| **Redis Checkpointer 改为 durable checkpointer** | 生产 HITL 必须能长期暂停和恢复，PostgreSQL durable checkpointer 为权威；Redis 只做热路径缓存和临时加速。                                     |
+| **pgvector 从业务库中拆出**                           | 10TB 文档量下，业务 OLTP、审计、审批和向量召回不得共库承压；Milvus Distributed 承载大规模向量检索，pgvector 只保留轻量场景。                              |
+| **A2A 改成企业事件集成架构**                             | A2A 必须具备消息信封、schema_version、trace_id、idempotency_key、callback_url、签名、Outbox、Inbox、回调确认和审计链。                    |
+| **Celery 不承担工作流语义**                            | Celery 是任务执行器，RabbitMQ 是消息传输层，LangGraph 才是流程状态机；Worker 完成后发布事件，由 Workflow Runtime 恢复节点。                        |
+| **OpenTelemetry 优先**                           | trace_id 贯穿 API、Workflow、Worker、LLM、RAG、Text2SQL、Tool、外部系统；Jaeger/Tempo、Prometheus、日志和 LangFuse 都以同一 trace 关联。 |
+| **LLM 不硬编码模型名**                                | DeepSeek、Qwen、私有模型 endpoint 均进入 Model Gateway；模型版本、路由、熔断、灰度、成本和质量评估由 Model Registry 管理。                        |
 
 ---
 
@@ -1726,56 +1726,56 @@ Workflow Runtime: 读取命令 → graph.invoke/resume(state, config={"configura
 
 > 隔离原则：科沃斯用户不可查询添可数据，反之亦然。集团用户拥有全局视角但必须有显式全局权限。生产使用应用层过滤 + PG RLS 双保险，禁止只依赖应用层拦截。
 
-### 8.14 智能体记忆架构设计
+### 8.14 上下文与记忆生命周期架构设计
 
-记忆是 AI 智能体区别于传统规则系统的核心能力。赫尔墨斯的记忆体系采用**分层记忆架构**，覆盖从单次交互到跨案件学习的完整记忆谱系。
+记忆是 AI 智能体区别于传统规则系统的核心能力。赫尔墨斯不把记忆设计成 Agent 私有状态或全局共享 Memory 池，而是采用**上下文与记忆生命周期架构**，覆盖从单次调用上下文到跨案件组织知识的完整治理链路。
 
-#### 8.14.1 记忆分层模型
+#### 8.14.1 L1-L4 生命周期模型
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    赫尔墨斯记忆分层架构                             │
+│              赫尔墨斯上下文与记忆生命周期架构                       │
 │                                                                   │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │  L4: 组织记忆 (Organizational Memory)                        │ │
-│  │  跨案件/跨用户/跨模块的持久知识                                │ │
-│  │  ├── 知识库 (RAG): 制度法规、历史案例、报告模板、风险规则      │ │
-│  │  ├── 反馈闭环: 处置结果回流 → 规则优化 → 知识更新             │ │
-│  │  └── 审计日志: 全量操作记录，支撑复盘与模式发现               │ │
+│  │  L4: 组织知识记忆 (Curated Organizational Knowledge)          │ │
+│  │  经审核、脱敏、版本化后可跨案件/跨模块复用的长期知识            │ │
+│  │  ├── 制度法规、历史案例、报告模板、风险规则                  │ │
+│  │  ├── 处罚先例、整改经验、缺陷模式、指标口径                  │ │
+│  │  └── 案件闭环后的候选知识 → 人工审核 → 发布                  │ │
 │  │  存储: Milvus + Elasticsearch/OpenSearch + PostgreSQL metadata│ │
 │  │  生命周期: 永久 (持续更新)                                    │ │
 │  └─────────────────────────────────────────────────────────────┘ │
-│                              ↑ 固化                               │
+│                              ↑ 审核发布                           │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │  L3: 案例记忆 (Episodic Memory)                              │ │
-│  │  单个案件的完整处理轨迹与决策链                                │ │
+│  │  L3: 案件事实记忆 (Case Record Memory)                        │ │
+│  │  单个案件的已确认事实、完整处理轨迹与决策链                    │ │
 │  │  ├── 案件工作流状态 (LangGraph State + Checkpointer)          │ │
-│  │  ├── 阶段产出物 (初判报告/调查方案/分析报告/追责意见)          │ │
+│  │  ├── approved 阶段产物 (初判/调查方案/报告/追责意见)           │ │
 │  │  ├── 碳基守门记录 (审批决策/修改内容/驳回原因)                 │ │
 │  │  └── 外部交互记录 (A2A 任务/风控同步/法务回传)                │ │
 │  │  存储: Redis (活跃) + PostgreSQL (持久)                       │ │
 │  │  生命周期: 案件活跃期 → 温层归档 (90天) → 冷层 (2年+)        │ │
 │  └─────────────────────────────────────────────────────────────┘ │
-│                              ↑ 聚合                               │
+│                              ↑ HITL 通过后固化                    │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │  L2: 会话记忆 (Conversational Memory)                        │ │
-│  │  单个工作流阶段内的多轮人机交互上下文                           │ │
+│  │  L2: 阶段交互记忆 (Stage Interaction Memory)                  │ │
+│  │  单个工作流阶段内的多轮人机交互和临时分析状态                  │ │
 │  │  ├── LLM 对话历史 (messages: BaseMessage[])                  │ │
-│  │  ├── 检索上下文 (本轮 RAG 召回的文档片段)                      │ │
+│  │  ├── 追问、驳回原因、人工修改、重新生成意见                   │ │
 │  │  ├── Tool 调用结果缓存 (避免重复计算)                         │ │
 │  │  └── Context Window 管理 (摘要压缩 + 滑动窗口)                │ │
 │  │  存储: PostgreSQL durable checkpoint + Redis 热缓存            │ │
 │  │  生命周期: 单阶段 (守门完成后归档 → 压缩摘要保留)              │ │
 │  └─────────────────────────────────────────────────────────────┘ │
-│                              ↑ 交互                               │
+│                              ↑ 阶段内交互                         │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │  L1: 感知记忆 (Sensory Memory)                               │ │
-│  │  单次 LLM 调用的即时输入                                       │ │
+│  │  L1: 调用上下文 (Invocation Context)                          │ │
+│  │  单次 Agent/LLM 调用时由 Context Builder 组装的即时输入        │ │
 │  │  ├── 用户输入 (文本/字段/附件引用)                             │ │
 │  │  ├── 多模态感知结果 (ASR 转录/OCR 文本/视频描述)               │ │
-│  │  └── 系统注入 (System Prompt + 阶段知识 + 历史摘要)           │ │
-│  │  存储: LLM Context Window (瞬时, 无持久化)                    │ │
-│  │  生命周期: 单次 LLM 调用结束即释放                             │ │
+│  │  └── System Prompt + L2/L3/L4 授权引用与摘要                  │ │
+│  │  存储: LLM Context Window (瞬时) + context_snapshot 引用       │ │
+│  │  生命周期: 单次调用结束即释放，不持久化完整输入全文             │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -1783,35 +1783,32 @@ Workflow Runtime: 读取命令 → graph.invoke/resume(state, config={"configura
 #### 8.14.2 记忆流转与生命周期
 
 ```
-用户操作 → L1 感知记忆 ──LLM推理──→ L2 会话记忆 (多轮对话)
-                                        │
-                        ┌───────────────┘ 守门通过
-                        ↓
-                  L3 案例记忆 (阶段产物 + 决策链)
-                        │
-            ┌───────────┼───────────┐
-            ↓           ↓           ↓
-       后续阶段引用   问题汇入     相似案件推荐
-       (继续调查)   持续改善模块   (风险监控回流)
-                        │
-                        ↓ 案件闭环
-                  ┌─────────────────┐
-                  │   L3 → L4 固化   │
-                  │                  │
-                  │  调查报告 → 案例库│
-                  │  处置经验 → 规则库│
-                  │  缺陷模式 → 指标库│
-                  └─────────────────┘
+Context Builder 按当前阶段、权限和版本
+  ├── 读取 L2 阶段交互摘要
+  ├── 读取 L3 approved 案件事实
+  └── 检索 L4 已发布组织知识
+        ↓
+生成 L1 调用上下文 + context_snapshot_id
+        ↓
+Stage Agent 输出草稿
+        ↓
+L2 记录阶段交互、追问、驳回、人工修改
+        ↓ HITL 通过
+L3 写入 approved 阶段产物、证据引用、数据引用和决策链
+        ↓ 案件闭环 + 知识审核
+L4 发布脱敏、版本化后的案例经验、规则和指标
 ```
+
+这里的核心是“按需召回 + 受控提升”，不是无条件的 L1 → L2 → L3 → L4 单向复制。下游 Agent 默认只读取人工确认后的 `approved_version`；被驳回草稿、人工删除结论、未授权明细和高敏原文不得作为下游事实。
 
 #### 8.14.3 记忆检索策略
 
 | 记忆类型 | 检索方式 | 触发时机 | 技术实现 |
 |----------|----------|----------|----------|
-| **L4 组织记忆** | 向量语义检索 + 全文关键词 + 结构化过滤 | 每个工作流阶段启动时 | Milvus 向量召回 + Search Adapter (BM25) + SQL 元数据过滤；混合检索 + Re-ranking |
-| **L3 案例记忆** | 结构化查询 + 相似案例检索 | 调查方案生成 / 案件定性 / 追责建议时 | SQL 查询历史案件 (同类型/同部门/同金额区间)；Milvus 相似案例召回 |
-| **L2 会话记忆** | LangGraph State 直接读取 | 单阶段内后续 LLM 调用 | `state["messages"]` 自动注入；超长对话自动摘要压缩 (LLM 生成 200 token 摘要) |
-| **L1 感知记忆** | 实时注入 | 每次 LLM 调用 | System Prompt 模板 + 阶段知识注入 + RAG 上下文组装 |
+| **L4 组织知识记忆** | 向量语义检索 + 全文关键词 + 结构化过滤 | 每个工作流阶段启动时按需召回 | Milvus 向量召回 + Search Adapter (BM25) + SQL 元数据过滤；混合检索 + Re-ranking |
+| **L3 案件事实记忆** | 结构化查询 + 相似案例检索 | 调查方案生成 / 案件定性 / 追责建议时 | SQL 查询本案 approved 产物和历史案件；Milvus 相似案例召回 |
+| **L2 阶段交互记忆** | LangGraph State / checkpoint 读取 | 单阶段内后续 LLM 调用 | `state["messages"]`、驳回原因、人工修改记录按策略注入；超长对话做结构化摘要压缩，并保留人工意见、决策、证据引用和 `dropped_refs` |
+| **L1 调用上下文** | 实时装配 | 每次 LLM 调用 | Context Builder + System Prompt 模板 + L2/L3/L4 授权引用组装 |
 
 #### 8.14.4 上下文窗口管理策略
 
@@ -1819,15 +1816,18 @@ Workflow Runtime: 读取命令 → graph.invoke/resume(state, config={"configura
 
 | 策略 | 触发条件 | 处理方式 |
 |------|----------|----------|
-| **滑动窗口** | messages 总 token > 32K | 保留最近 16K tokens + System Prompt + 早期摘要 |
-| **自动摘要** | 单阶段对话超过 10 轮 | LLM 生成 200 token 结构化摘要（关键事实/决策/待办），替换早期详细对话 |
-| **分层注入** | 每阶段启动 | System Prompt (固定) → 阶段知识 (RAG top 5, ~2K tokens) → 历史摘要 (~500 tokens) → 用户输入 |
-| **引用而非复制** | 引用大段文档内容 | 仅保留文档 ID + 相关片段引用，完整文档按需再次检索 |
+| **结构化滑动窗口** | messages 总 token > 32K | 保留最近交互、P0/P1 事项、人工意见和证据引用；早期对话压缩为结构化摘要而不是直接丢弃 |
+| **防丢失摘要** | 单阶段对话超过 10 轮或材料超过阶段预算 | 生成包含 `confirmed_facts`、`disputed_facts`、`human_edits`、`evidence_refs`、`data_refs`、`knowledge_refs`、`missing_items` 和 `dropped_refs` 的摘要 |
+| **分层注入** | 每阶段启动 | System Prompt (固定) → P0/P1 案件事实与人工意见 → RAG/Text2SQL 引用与摘要 → 历史摘要 → 用户输入 |
+| **引用而非复制** | 引用大段文档内容 | 仅保留文档 ID、版本、片段引用和 source hash，完整文档由授权 Tool 按需再次检索 |
+| **压缩门禁** | 裁剪比例过高或 P0/P1 材料缺失 | 不调用 Stage Agent，返回 `context_insufficient` 并要求人工选择材料 |
+
+摘要压缩不能替代原始事实存储。原件仍在 PostgreSQL、MinIO/NAS、Search/Milvus/OpenSearch、`human_approvals`、`audit_log`、`data_refs` 和 `knowledge_documents` 中；压缩结果只是本次 Agent 调用的工作视图，并通过 `context_snapshot_id` 和 `context_snapshot_refs` 记录 included、excluded、脱敏和裁剪原因。
 
 #### 8.14.5 跨案件学习闭环
 
 ```
-案件 A (已完成) ──→ 案例记忆 (L3)
+案件 A (已完成) ──→ 案件事实记忆 (L3)
                         │
             ┌───────────┼───────────┐
             ↓           ↓           ↓
@@ -1836,7 +1836,7 @@ Workflow Runtime: 读取命令 → graph.invoke/resume(state, config={"configura
             │           │           │
             └───────────┼───────────┘
                         ↓
-              组织记忆 (L4) 更新
+              组织知识记忆 (L4) 更新
                         │
             ┌───────────┼───────────┐
             ↓           ↓           ↓
@@ -1847,8 +1847,8 @@ Workflow Runtime: 读取命令 → graph.invoke/resume(state, config={"configura
 ```
 
 **固化机制**：
-- **自动固化**：案件闭环后，调查报告 + 关键决策 + 处置结果自动入库（结构化特征提取 + Embedding 索引）
-- **人工审核**：高风险案件（涉及刑事/重大金额）需人工审核后入库
+- **候选生成**：案件闭环后，调查报告、关键决策、处置结果、缺陷模式生成候选知识条目（结构化特征提取 + Embedding 索引准备）
+- **人工审核**：高风险案件（涉及刑事/重大金额）以及包含敏感主体的经验条目必须人工审核、脱敏和版本化后入库
 - **衰减/淘汰**：过时案例（法律法规已变更）标记为"仅供参考"，权重降低
 - **指标迭代**：风险监控模块的处置结果回流 → 误报规则优化 → 准确率持续提升（已体现在 风险监控 [6.6] 阶段）
 

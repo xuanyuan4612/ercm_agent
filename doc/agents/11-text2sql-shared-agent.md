@@ -1,4 +1,4 @@
-# Text2SQL 共享 Agent 详细设计
+	# Text2SQL 共享 Agent 详细设计
 
 > **所属系统**：赫尔墨斯（Hermes）风险控制 AI 智能体  
 > **适用范围**：8 个业务模块全部 Stage Agent、对话入口 Agent、只读数仓查询接口  
@@ -83,6 +83,7 @@ Text2SQL 请求必须携带业务上下文、权限上下文和数据域上下�
   "query": "近 30 天同一供应商多次中标且报价接近预算上限的记录有哪些",
   "module": "risk_monitoring",
   "stage": "risk_rule_generation",
+  "caller_agent": "risk-rule-agent",
   "workflow_thread_id": "wf-thread-id",
   "case_id": "case-uuid",
   "tenant_scope": {
@@ -94,6 +95,33 @@ Text2SQL 请求必须携带业务上下文、权限上下文和数据域上下�
   "data_scope": ["purchase", "supplier", "bid"],
   "data_source": "doris_risk_dw",
   "sql_dialect": "doris",
+  "data_query_intent": {
+    "intent_type": "anomaly_filter",
+    "intent_confidence": 0.82,
+    "entities": {
+      "supplier_names": [],
+      "employee_names": [],
+      "org_names": []
+    },
+    "metrics": ["supplier_win_count", "budget_close_ratio"],
+    "dimensions": ["supplier", "bid_project", "org"],
+    "time_range": {
+      "start": "2026-05-28",
+      "end": "2026-06-27"
+    },
+    "filters": [
+      {
+        "field_alias": "报价接近预算上限",
+        "operator": ">=",
+        "value": 0.95
+      }
+    ],
+    "grain": ["supplier_id", "bid_project_id"],
+    "output_preference": "summary_with_samples",
+    "source_refs": ["user_query"],
+    "missing_slots": [],
+    "ambiguous_entities": []
+  },
   "allowed_tables": ["dw_purchase_bid_records", "dim_supplier"],
   "denied_tables": [],
   "purpose": "生成风险监控规则并进行测试环境校验",
@@ -114,10 +142,12 @@ Text2SQL 请求必须携带业务上下文、权限上下文和数据域上下�
 | `query` | 是 | 自然语言数据问题或待生成 SQL 的业务描述 |
 | `module` | 是 | 调用模块，用于 Profile、数据域和权限解析 |
 | `stage` | 是 | 当前业务阶段，用于限制可查表、字段和执行模式 |
+| `caller_agent` | 是 | 调用方 Stage Agent ID，用于工具授权、审计和质量反馈 |
 | `tenant_scope` | 是 | 租户、组织、角色、密级等权限上下文 |
 | `data_scope` | 是 | 允许查询的数据域，如采购、费用、销售、HR、商业秘密 |
 | `data_source` | 是 | 目标数仓连接标识；生产默认为 `doris_risk_dw` |
 | `sql_dialect` | 是 | SQL 方言；生产固定为 `doris` |
+| `data_query_intent` | 是 | Stage Agent 提取出的结构化数据查询意图，用于 Schema 路由、指标口径匹配和缺口判断 |
 | `purpose` | 是 | 查询目的，用于审计和风险判断 |
 | `allowed_tables` | 否 | 调用方显式收窄的表范围 |
 | `denied_tables` | 否 | 调用方显式排除的表范围 |
@@ -133,6 +163,139 @@ Text2SQL 请求必须携带业务上下文、权限上下文和数据域上下�
 - `generate_only`：允许不传 `approval_id`，只生成、校验和返回 SQL。
 - `validate_only`：校验 `provided_sql` 或人工修改 SQL，不执行。
 - `execute_readonly`：必须携带 `query_id` 对应的 `approval_id` 和 `approved_sql_hash`；待执行 SQL hash、审批记录 SQL hash、当前策略版本必须一致，否则拒绝执行并重新进入校验和 HITL。
+
+### 3.1.1 Agent 发送给 Text2SQL 的内容
+
+Stage Agent 发送给 Text2SQL 的不是“自然语言问题 + 全量 Schema”，而是一个可审计的 `DataQueryIntent`。自然语言 `query` 仍然保留，用于解释和人工审批，但真正驱动 Schema 路由的是结构化意图。
+
+`DataQueryIntent` 至少包含：
+
+| 字段                  | 说明                                                 |
+| ------------------- | -------------------------------------------------- |
+| `intent_type`       | 查询类型，如明细查询、聚合统计、异常筛选、趋势分析、主体关联、指标核对                |
+| `entities`          | 业务主体，如供应商、员工、客户、项目、合同、单据、组织；优先传主数据 ID，名称只能作辅助匹配    |
+| `metrics`           | 业务指标，如中标次数、中标金额、预算接近度、异常付款金额、费用报销金额                |
+| `dimensions`        | 分析维度，如供应商、员工、部门、项目、月份、业务循环                         |
+| `time_range`        | 明确起止时间；没有时间范围的大表明细查询必须进入追问或 HITL                   |
+| `filters`           | 业务过滤条件和阈值，使用业务别名而非物理字段名                            |
+| `grain`             | 期望统计粒度，如按供应商、按员工、按项目、按天                            |
+| `output_preference` | 返回形式，如聚合摘要、异常样本、明细列表、趋势序列                          |
+| `schema_hints`      | 可选的 schema 收窄提示，如已知数据域、指标名、表别名、历史规则 ID；只能收窄，不能扩大权限 |
+| `evidence_refs`     | 可选的证据引用，帮助限定案件对象和时间范围，不把未脱敏明细直接传给 Text2SQL         |
+
+Agent 不应该发送：
+
+- 数仓连接串、账号、密码或执行配置。
+- 全量 Doris Schema。
+- 未经脱敏的明细数据。
+- 自己拼接的 SQL，除非模式是 `validate_only` 且进入同等安全校验。
+- 超出 Profile 授权的数据域或表字段。
+
+这样设计的原因是：Agent 负责理解业务问题，Text2SQL 负责把业务意图落到授权 Schema。二者之间必须有结构化边界，不能让模型凭一句话猜表。
+
+### 3.1.2 DataQueryIntent 生成流程
+
+`DataQueryIntent` 由调用方 Stage Agent 侧生成，准确说是由 `Agent Runtime + Stage Agent + DataIntentBuilder` 共同生成。它不是 Text2SQL 自己凭空生成，也不是把用户问题直接交给 SQL 生成模型。
+
+生成位置：
+
+```text
+Stage Agent
+  -> Agent Runtime 加载 Module Agent Profile
+  -> DataIntentBuilder 生成 DataQueryIntent
+  -> Slot Validator 校验必填槽位
+  -> Policy Narrower 收窄数据域
+  -> Text2SQL Orchestrator
+```
+
+输入来源：
+
+| 来源 | 示例 | 用途 |
+|------|------|------|
+| 用户问题或阶段任务 | “分析供应商 A 与张三是否存在异常交易” | 提取查询目标和业务意图 |
+| workflow state | `case_id`、阶段、调查方案、已确认对象 | 绑定案件和阶段上下文 |
+| Module Agent Profile | `allowed_tools`、`data_scopes`、质量门禁 | 限制工具和数据域 |
+| 租户与权限上下文 | 事业部、组织、角色、密级 | 限制可访问范围 |
+| 已有证据引用 | 举报材料、访谈摘要、合同证据 | 限定主体、时间和问题范围 |
+| 业务术语表和轻量 ontology | 指标名、维度名、意图类型枚举 | 防止模型自造指标和维度 |
+
+生成步骤：
+
+1. **阶段任务识别**：Stage Agent 先判断当前业务阶段是否真的需要结构化数仓查询。能通过 RAG 或已有证据回答的问题，不生成 `DataQueryIntent`。
+2. **候选槽位抽取**：从用户问题、调查方案、证据摘要和 workflow state 中抽取主体、时间、指标、维度、过滤条件、期望输出。
+3. **受控枚举归一**：将自然语言映射到受控枚举，例如 `intent_type=subject_association_anomaly`、`metric=abnormal_payment_amount`、`dimension=supplier`。不允许模型临时创造未登记的指标名。
+4. **实体解析**：通过 `entity_resolution_index` 将“供应商 A”“张三”等名称解析为主体 ID。无法唯一解析时，生成 `missing_slots` 或 `ambiguous_entities`。
+5. **权限收窄**：将候选 `data_scopes` 与 Module Agent Profile、用户角色、组织、密级策略取交集。超出权限的域直接移除，并记录 `permission_narrowed=true`。
+6. **槽位校验**：根据 `intent_type` 校验必填槽位。例如主体关联异常必须有主体、时间范围、至少一个指标或异常模式；大表明细查询必须有时间范围。
+7. **置信度计算**：根据槽位完整度、实体解析结果、指标是否登记、时间范围是否明确、权限是否满足生成 `intent_confidence`。
+8. **生成可追溯对象**：输出 `DataQueryIntent`，同时记录来源字段、抽取规则、使用的 prompt 版本、模型版本和人工修改痕迹。
+
+`DataQueryIntent` 生成示例：
+
+```json
+{
+  "intent_type": "subject_association_anomaly",
+  "intent_confidence": 0.86,
+  "entities": {
+    "supplier_names": ["供应商A"],
+    "employee_names": ["张三"],
+    "supplier_ids": ["sup-001"],
+    "employee_ids": ["emp-009"]
+  },
+  "metrics": [
+    "supplier_bid_win_count",
+    "budget_close_ratio",
+    "abnormal_payment_amount"
+  ],
+  "dimensions": ["supplier", "employee", "bid_project", "payment_order"],
+  "time_range": {
+    "start": "2025-01-01",
+    "end": "2026-06-27"
+  },
+  "filters": [
+    {
+      "field_alias": "报价接近预算上限",
+      "operator": ">=",
+      "value": 0.95
+    }
+  ],
+  "grain": ["supplier_id", "employee_id", "bid_project_id"],
+  "output_preference": "summary_with_abnormal_samples",
+  "source_refs": ["case_state", "investigation_plan", "evidence_ref:report-001"],
+  "missing_slots": [],
+  "ambiguous_entities": [],
+  "permission_narrowed": false
+}
+```
+
+生成失败或信息不足时：
+
+```json
+{
+  "intent_type": "unknown",
+  "intent_confidence": 0.31,
+  "missing_slots": ["time_range", "metric"],
+  "ambiguous_entities": [
+    {
+      "input": "供应商A",
+      "candidates": ["sup-001", "sup-019"]
+    }
+  ],
+  "clarifying_questions": [
+    "请确认供应商A对应的主体 ID。",
+    "请补充查询时间范围。",
+    "请确认要核验的是中标金额、付款金额还是费用报销金额。"
+  ]
+}
+```
+
+处理原则：
+
+- `DataIntentBuilder` 可以调用 LLM 做语义抽取，但输出必须走 Pydantic / JSON Schema 校验。
+- LLM 只能在受控枚举、授权数据域和业务 ontology 内选择，不能创造数据域、表名、字段名或指标名。
+- Stage Agent 生成的 `DataQueryIntent` 不是最终可信依据，Text2SQL 必须重新做权限解析、Schema 路由、AST 校验和 HITL。
+- `intent_confidence` 低、`missing_slots` 非空或 `ambiguous_entities` 非空时，Stage Agent 优先追问或请求人工补充，不应直接进入 SQL 生成。
+- 人工在 HITL 中修改查询目标后，必须重新生成 `DataQueryIntent`，并使原 SQL hash 和审批记录失效。
 
 ### 3.2 Text2SQL 响应
 
@@ -301,7 +464,83 @@ RAG 子查询：
 - 未进入授权范围的表和字段不得出现在 LLM Prompt 中。
 - 如果 Semantic Layer 与物理 Data Catalog 冲突，以 Semantic Layer 的业务口径为准；若物理字段不存在，则返回 `schema_conflict=true` 并停止生成。
 
-### 4.3.1 Semantic Layer / Metric Registry
+### 4.3.1 Schema 路由与缺口判断
+
+Text2SQL 不能让 LLM 直接猜“应该查哪个 Schema”。生产上必须先完成 Schema 路由，再把最小授权 Schema 注入给模型。
+
+Schema 路由输入：
+
+- `module`、`stage`、`caller_agent`。
+- Module Agent Profile 中的 `data_scopes` 和 `allowed_tools`。
+- `tenant_scope`、角色、组织、密级。
+- `DataQueryIntent` 中的 `intent_type`、`entities`、`metrics`、`dimensions`、`time_range`、`filters`、`grain`。
+- 可选 `schema_hints`，只能作为候选收窄信号，不能扩大访问范围。
+
+路由步骤：
+
+1. 根据 `module + stage + caller_agent` 读取 Profile，得到当前阶段可用数据域，例如廉洁监察分析阶段可访问采购、供应商、财务，但不能默认访问 HR 薪酬。
+2. 将请求 `data_scope` 与 Profile 授权数据域、用户权限和数据安全策略取交集，得到可见数据域。
+3. 对 `entities` 做主数据解析，例如“供应商 A”映射到 `supplier_id`，“张三”映射到 `employee_id`，同时保留名称匹配置信度。
+4. 用 `metrics` 和 `dimensions` 查询 Semantic Layer / Metric Registry，拿到候选事实表、维表、时间字段、默认过滤和 join path。
+5. 用 `intent_type` 和 `filters` 查询 Data Catalog 的业务标签、字段别名、中文名、数据等级和分区键，形成候选表字段集合。
+6. 用 RAG 检索数据字典、历史规则和字段口径文档，补充别名、业务术语和历史 SQL 用法。
+7. 对候选 Schema 打分，优先选择覆盖率高、权限满足、口径明确、join path 明确、时间字段明确、成本可控的最小表集合。
+8. 只把最终候选中的授权表、授权字段、口径说明和 join path 注入 SQL 生成 Prompt。
+
+候选 Schema 评分维度：
+
+| 维度 | 判断方式 |
+|------|----------|
+| 数据域匹配 | 表所属 domain 是否落在授权 `data_scope` 交集中 |
+| 实体覆盖 | 是否能覆盖供应商、员工、项目、合同、单据等主体 ID |
+| 指标覆盖 | Metric Registry 是否存在指标定义、表达式、粒度和时间字段 |
+| 维度覆盖 | 是否存在所需维度表和合法 join path |
+| 时间可控 | 是否存在分区字段或可信时间字段 |
+| 权限可控 | 表、字段、密级、租户、组织是否全部授权 |
+| 口径可信 | Data Catalog、Semantic Layer、RAG 字典是否一致 |
+| 成本可控 | 是否能基于分区、索引、rollup 或聚合表减少扫描 |
+
+以下情况必须返回 `schema_insufficient=true`，不得生成高风险 SQL：
+
+- `DataQueryIntent` 缺少关键实体、时间范围、指标或维度，导致无法确定查询对象。
+- 候选表超过一个且评分接近，无法判断应查明细表、汇总表、宽表还是历史表。
+- Metric Registry 找不到指标口径，例如“异常付款金额”没有定义表达式、默认过滤或时间字段。
+- 实体解析失败，例如供应商名称无法唯一映射到 `supplier_id`。
+- 找不到可信 join path，例如供应商与付款表之间没有已登记关联路径。
+- Data Catalog 与 Semantic Layer 冲突，且无法通过 owner 或版本判断权威来源。
+- 需要访问的表或字段不在当前阶段授权范围内。
+- 大表明细查询缺少时间或分区过滤。
+
+`schema_insufficient=true` 时，Text2SQL 应返回可执行的补充问题，而不是让 Agent 猜：
+
+```json
+{
+  "schema_insufficient": true,
+  "missing_slots": ["supplier_id", "payment_metric_definition", "time_range"],
+  "clarifying_questions": [
+    "供应商A对应多个主体，请选择 supplier_id。",
+    "异常付款金额目前没有统一指标口径，请确认按付款金额、已付款金额还是发票金额计算。",
+    "请补充查询时间范围，避免扫描全量付款明细。"
+  ],
+  "candidate_domains": ["purchase", "supplier", "finance"],
+  "candidate_tables": [
+    {
+      "table": "dw_purchase_payment_detail",
+      "reason": "覆盖付款明细，但缺少异常付款指标口径",
+      "confidence": 0.62
+    },
+    {
+      "table": "ads_supplier_risk_summary",
+      "reason": "覆盖供应商风险汇总，但不含付款明细样本",
+      "confidence": 0.58
+    }
+  ]
+}
+```
+
+Stage Agent 收到 `schema_insufficient=true` 后，只能追问用户、请求数据 owner 补齐口径、或降低报告置信度；不得绕过 Text2SQL 自行拼接 SQL。
+
+### 4.3.2 Semantic Layer / Metric Registry
 
 生产 Text2SQL 不能只依赖物理表字段，否则容易生成“能跑但口径错”的 SQL。Hermes 需要维护面向风控场景的语义层。
 
@@ -343,6 +582,60 @@ Metric Registry 示例：
 - 涉及指标、金额、频次、比例、转化率、风险率时必须引用 Metric Registry。
 - 语义层没有定义的指标，不能自动编造口径；必须进入人工确认或返回 `schema_insufficient=true`。
 - Stage Agent 最终结论中引用的数据口径必须带 `semantic_version`。
+
+### 4.3.3 Semantic Layer / Metric Registry 构建与存储
+
+Semantic Layer / Metric Registry 是 Text2SQL 的结构化口径权威，不是 RAG 文档本身。RAG 可以召回指标说明、数据字典和历史 SQL 作为辅助上下文，但 Text2SQL 生成 SQL 时必须以已发布的结构化注册表为准。
+
+构建流程：
+
+1. **同步 Doris 物理元数据**：由离线元数据同步任务读取 Doris 表、字段、类型、分区、注释、行数、更新时间和 owner，写入 `data_catalog_tables`、`data_catalog_columns`。运行时 Text2SQL 不通过 `SHOW`、`DESC` 或系统库临时探测元数据。
+2. **注册数据域**：数据 owner 将采购、供应商、财务、费用、HR、合同、行为日志等域登记到 `data_domain_registry`，声明默认数仓、允许模块、安全等级和 owner。
+3. **注册维度**：将供应商、员工、组织、项目、合同、付款单、报销单等业务实体登记到 `semantic_dimensions`，绑定维表、主键、展示字段、允许数据域。
+4. **注册主体解析索引**：将供应商名称、统一社会信用代码、员工姓名、员工号、组织名称等映射写入 `entity_resolution_index`，供 `DataQueryIntent` 和 Schema 路由消歧使用。
+5. **注册指标**：业务 owner 定义指标含义，数据 owner 和数仓工程师确认事实表、表达式、时间字段、默认过滤、粒度、维度、阈值、Doris 方言表达式，写入 `semantic_metrics`。
+6. **注册关联路径**：将事实表、维表、汇总表之间允许的 join path 写入 `semantic_join_paths`，包括关联字段、基数、默认路径和禁用路径。未登记 join path 时，Text2SQL 不得自行拼接关联。
+7. **注册别名和术语**：将“报价贴近预算”“陪标”“供应商”“厂商”“采购员”等业务说法写入 `schema_aliases`，指向标准指标、维度、字段或风险类型。
+8. **准备验证用例**：每个指标至少准备 golden case，包括固定测试数据、期望 SQL 或等价 SQL、期望结果、权限负例和口径解释。
+9. **审批发布版本**：指标、维度、join path、别名必须经过 owner 审核，进入 `approved` 状态后才能被 Text2SQL 使用；发布时生成 `semantic_version`。
+10. **索引说明文档到 RAG**：已发布指标的业务说明、数据字典、历史规则、口径评审记录可以进入 RAG，用于解释和召回，但不替代结构化注册表。
+
+存储位置：
+
+| 数据 | 权威存储 | 是否进入 RAG | 说明 |
+|------|----------|--------------|------|
+| 数据域、表、字段、权限、敏感等级 | PostgreSQL 业务/配置库或独立元数据服务 | 可把说明文档入 RAG | 结构化元数据是运行时权威 |
+| 指标、维度、join path、别名、语义版本 | PostgreSQL 业务/配置库或独立元数据服务 | 可把指标说明、评审记录入 RAG | Text2SQL 只能读取 `approved` 版本 |
+| 指标验证用例和结果 | PostgreSQL + 测试数据集 | 可把评审结论入 RAG | 用于发布门禁和回归测试 |
+| Doris 明细、汇总表、物化视图 | Doris 数仓 | 否 | 实际业务数据仍在 Doris |
+| 数据字典文档、历史 SQL、口径说明、制度解释 | Elasticsearch/OpenSearch + Milvus RAG 索引 | 是 | 作为辅助召回和解释来源 |
+| 查询运行、审批、结果快照引用 | PostgreSQL + MinIO | 不默认进入 RAG | 用于审计和追溯 |
+
+查找顺序：
+
+1. Text2SQL 先按 `module + stage + caller_agent + data_scope` 查 `data_access_policies` 和 `data_domain_registry`，得到可访问数据域。
+2. 再按 `DataQueryIntent.metrics` 查 `semantic_metrics`，按 `dimensions` 查 `semantic_dimensions`，按实体关系查 `semantic_join_paths`。
+3. 再查 `data_catalog_tables`、`data_catalog_columns`，确认物理表字段存在、类型正确、分区字段可用、字段权限满足。
+4. 再查 `schema_aliases`、`entity_resolution_index`，补齐业务别名和主体 ID。
+5. 最后调用 RAG 检索数据字典、指标说明、历史规则和字段口径文档，只用于补充解释、提升字段映射置信度和生成审批说明。
+
+冲突处理：
+
+- 结构化注册表和 RAG 文档冲突时，以结构化注册表为准，并记录 `schema_conflict`。
+- RAG 召回到某个指标说明，但 `semantic_metrics` 没有 `approved` 版本时，Text2SQL 不得直接生成 SQL，必须返回 `schema_insufficient=true`。
+- Doris 物理字段存在，但没有数据域、敏感等级或 owner 时，不得注入给模型。
+- 指标表达式存在，但缺少 `time_column`、`grain`、`default_filters` 或合法 join path 时，不得用于高风险 SQL。
+
+更新治理：
+
+| 更新类型 | 触发来源 | 生效规则 |
+|----------|----------|----------|
+| Doris 表字段变更 | 数仓发布、元数据同步任务 | 先更新 Data Catalog，再跑影响分析和 golden case |
+| 新增指标 | 业务 owner 提出 | draft -> review -> approved，生成新 `semantic_version` |
+| 指标口径变更 | 业务规则或审计反馈 | 旧版本保留，新版本灰度；历史审批绑定旧版本自动失效或重审 |
+| 新增 join path | 数据 owner / 数仓工程师 | 必须标注基数、默认路径、性能风险和禁用场景 |
+| 新增别名 | HITL 修正、低置信度反馈 | 进入 `schema_aliases`，经 owner 审核后生效 |
+| RAG 文档更新 | 数据字典或口径说明更新 | 只更新辅助召回，不自动改变结构化口径 |
 
 ### 4.4 Step 4：问题标准化与查询计划
 
@@ -564,6 +857,7 @@ Doris 成本评估至少关注：
 3. 生成面向 Stage Agent 的结构化摘要。
 4. 将数据依据作为 `data_refs` 返回。
 5. 不把未授权字段泄露给 LLM。
+6. 摘要进入 Context Compressor 时必须保留 query_id、sql_hash、参数摘要、时间范围、过滤条件、行数、截断状态和 diagnostics；摘要文本不得替代 `data_refs` 成为唯一事实源。
 
 摘要示例：
 
@@ -838,13 +1132,40 @@ Conversation Gateway 可识别数据查询意图，但不直接执行高风险�
     "security_level": "secret"
   },
   "data_scopes": ["purchase", "supplier", "finance"],
-  "entities": {
-    "supplier_names": ["供应商A"],
-    "employee_names": ["张三"]
-  },
-  "time_range": {
-    "start": "2025-01-01",
-    "end": "2026-06-27"
+  "data_query_intent": {
+    "intent_type": "subject_association_anomaly",
+    "intent_confidence": 0.86,
+    "entities": {
+      "supplier_names": ["供应商A"],
+      "employee_names": ["张三"]
+    },
+    "metrics": [
+      "supplier_bid_win_count",
+      "supplier_bid_win_amount",
+      "budget_close_ratio",
+      "abnormal_payment_amount"
+    ],
+    "dimensions": ["supplier", "employee", "bid_project", "payment_order"],
+    "time_range": {
+      "start": "2025-01-01",
+      "end": "2026-06-27"
+    },
+    "filters": [
+      {
+        "field_alias": "报价接近预算上限",
+        "operator": ">=",
+        "value": 0.95
+      }
+    ],
+    "grain": ["supplier_id", "employee_id", "bid_project_id"],
+    "output_preference": "summary_with_abnormal_samples",
+    "schema_hints": {
+      "candidate_domains": ["purchase", "supplier", "finance"],
+      "must_resolve_entities": ["supplier_id", "employee_id"]
+    },
+    "source_refs": ["case_state", "investigation_plan", "evidence_ref:report-001"],
+    "missing_slots": [],
+    "ambiguous_entities": []
   },
   "max_rows": 200,
   "trace_id": "otel-trace-id"
@@ -998,6 +1319,13 @@ Text2SQL 不替代 RAG，而是依赖 RAG 补齐数据字典和业务口径。
   -> Stage Agent 基于数据摘要 + RAG 知识上下文生成业务建议
 ```
 
+查找规则：
+
+- **表、字段、指标、维度、join path、权限策略**：优先查结构化注册表，包括 Data Catalog、Semantic Layer、Metric Registry、Data Access Policy。这些是运行时权威来源。
+- **字段解释、指标说明、历史规则、口径评审记录、业务术语**：通过 RAG 召回，作为辅助上下文和审批说明。
+- **RAG 召回结果不能直接变成可执行口径**：如果 RAG 找到“异常付款金额”的说明，但 Metric Registry 没有已发布指标，Text2SQL 必须返回 `schema_insufficient=true`。
+- **冲突时结构化注册表优先**：RAG 文档与 Semantic Layer 冲突时，不能让模型自行选择，必须记录 `schema_conflict` 并进入人工确认或数据治理修正。
+
 RAG 返回知识不足时：
 
 - Text2SQL 可继续使用结构化 Data Catalog。
@@ -1130,6 +1458,10 @@ Text2SQL 质量不能只看 SQL 是否能执行，还必须验证结果是否符
 上线前至少准备：
 
 - Data Catalog：表、字段、中文名、类型、负责人、数据等级。
+- Data Domain Registry：数据域、owner、默认数仓、允许模块和安全等级。
+- Schema Alias：业务别名、字段别名、表别名、历史名称和同义词映射。
+- Entity Resolution Index：供应商、员工、客户、组织、项目、合同、单据等主体解析索引。
+- Schema Routing Rules：模块、阶段、意图类型到数据域、指标、优先表和禁用表的路由规则。
 - 数据域授权：模块、阶段、角色到数据域的授权矩阵。
 - 敏感字段清单：身份证、手机号、银行卡、工资、商业秘密字段等。
 - 脱敏策略：展示、摘要、禁用、只返回快照 ID。
@@ -1138,6 +1470,7 @@ Text2SQL 质量不能只看 SQL 是否能执行，还必须验证结果是否符
 - Doris 数仓只读账号、测试环境连接、生产连接密钥引用和连接能力清单。
 - Doris 方言函数 allowlist、危险对象 denylist、系统库 denylist。
 - Semantic Layer / Metric Registry 初始版本。
+- Schema 路由 golden set：每个模块至少覆盖实体解析、指标匹配、歧义表选择、缺少时间范围、无授权字段等正反用例。
 
 ### 10.2 持续更新
 
@@ -1161,11 +1494,17 @@ Text2SQL 质量不能只看 SQL 是否能执行，还必须验证结果是否符
 | 对象 | 职责 | 关键字段 |
 |------|------|----------|
 | `data_sources` | 数仓连接配置元数据 | `id`、`name`、`dialect`、`env`、`readonly_dsn_ref`、`owner_id`、`is_active` |
+| `data_domain_registry` | 数据域注册表 | `domain`、`display_name`、`owner_id`、`default_data_source`、`allowed_modules`、`security_level` |
 | `data_catalog_tables` | 表级数据目录 | `table_name`、`domain`、`client_scope`、`security_level`、`owner_id`、`partition_keys` |
 | `data_catalog_columns` | 字段级数据目录 | `table_name`、`column_name`、`display_name`、`data_type`、`sensitivity_level`、`mask_policy` |
-| `semantic_metrics` | 指标注册表 | `metric_name`、`expression`、`grain`、`time_column`、`default_filters`、`semantic_version` |
-| `semantic_dimensions` | 维度注册表 | `dimension_name`、`table_name`、`key_column`、`display_columns`、`allowed_domains` |
-| `semantic_join_paths` | 语义关联路径 | `from_table`、`to_table`、`join_keys`、`cardinality`、`is_default` |
+| `schema_aliases` | Schema 业务别名 | `alias`、`object_type`、`target_object`、`domain`、`confidence`、`source`、`version` |
+| `schema_routing_rules` | Schema 路由规则 | `module`、`stage`、`intent_type`、`domain`、`preferred_metrics`、`preferred_tables`、`blocked_tables` |
+| `entity_resolution_index` | 主体解析索引 | `entity_type`、`entity_name`、`entity_id`、`source_table`、`client_scope`、`valid_from`、`valid_to` |
+| `semantic_metrics` | 指标注册表 | `metric_name`、`expression`、`grain`、`time_column`、`default_filters`、`semantic_version`、`review_status` |
+| `semantic_dimensions` | 维度注册表 | `dimension_name`、`table_name`、`key_column`、`display_columns`、`allowed_domains`、`review_status` |
+| `semantic_join_paths` | 语义关联路径 | `from_table`、`to_table`、`join_keys`、`cardinality`、`is_default`、`review_status` |
+| `semantic_versions` | 语义层版本 | `semantic_version`、`status`、`owner_id`、`approved_by`、`approved_at`、`change_summary` |
+| `metric_validation_cases` | 指标验证用例 | `metric_name`、`semantic_version`、`input_fixture_ref`、`expected_sql_hash`、`expected_result_hash` |
 | `data_access_policies` | 数据访问策略 | `module`、`stage`、`role`、`data_scope`、`allowed_tables`、`blocked_columns` |
 | `data_query_runs` | 查询运行记录 | `query_id`、`user_id`、`module`、`stage`、`sql_hash`、`status`、`diagnostics` |
 | `data_query_approvals` | 查询审批记录 | `query_id`、`reviewer_id`、`action`、`sql_hash`、`catalog_version`、`semantic_version`、`policy_version` |
@@ -1179,6 +1518,8 @@ Text2SQL 质量不能只看 SQL 是否能执行，还必须验证结果是否符
 - `readonly_dsn_ref` 只保存密钥引用。
 - 结果快照必须加密、限期、受权限控制。
 - SQL 原文可按安全要求只保存脱敏版本和 hash。
+- Semantic Layer / Metric Registry 的权威记录存 PostgreSQL 业务/配置库或独立元数据服务；RAG 只索引说明文档、数据字典和评审记录。
+- Text2SQL 运行时只能读取 `approved` 状态的指标、维度、join path 和语义版本。
 
 ### 11.2 Adapter 接口契约
 
@@ -1305,6 +1646,9 @@ class SQLSafetyValidator(Protocol):
 - Text2SQL 不是业务主控，只是共享数据查询能力。
 - 所有 Stage Agent 数据查询都经过 Text2SQL Orchestrator。
 - 请求必须携带权限上下文和数据域上下文。
+- Agent 发给 Text2SQL 的必须是 `DataQueryIntent`，不能只传一句自然语言让模型猜表。
+- Schema 路由必须基于 Module Agent Profile、DataAccessPolicy、Data Domain Registry、Data Catalog、Semantic Layer、Entity Resolution Index 和 RAG 数据字典。
+- Schema 缺口必须显式返回 `schema_insufficient=true`、`missing_slots` 和可追问问题。
 - 生产数仓方言固定为 Doris；非 Doris 方言只能作为非生产降级适配。
 - SQL 生成前只注入授权 Schema。
 - 涉及指标口径时必须优先使用 Semantic Layer / Metric Registry。

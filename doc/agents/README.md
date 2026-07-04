@@ -7,6 +7,7 @@
 | 模块 | 文档 | 说明 |
 |------|------|------|
 | 通用 | [00-agent-architecture.md](00-agent-architecture.md) | Agent 架构总则、Module Graph/Profile/Stage Agent 边界、统一输入输出契约 |
+| 通用 | [09-context-engineering.md](09-context-engineering.md) | 生产级上下文工程架构、Context Builder、Context Envelope、Context Snapshot、跨模块上下文共享和审计回放 |
 | 01 廉洁监察 | [01-integrity-supervision-agents.md](01-integrity-supervision-agents.md) | 初筛、调查方案、分析报告、处置分流、处罚执行、报案协助 |
 | 02 风险监控 | [02-risk-monitoring-agents.md](02-risk-monitoring-agents.md) | 风险规则、异常初核、主体合并、风险定性、误报回流 |
 | 03 内控评价 | [03-internal-control-evaluation-agents.md](03-internal-control-evaluation-agents.md) | 审计方案、访谈、审计检查等共享 Agent 权威设计 |

@@ -4,8 +4,8 @@
 > **模块编号**：01
 > **模块名称**：廉洁监察（反舞弊调查）
 > **依赖文档**：[系统架构设计](../architecture-design.md) | [总体需求](../hermes-requirements.md) | [模块需求](../modules/01-integrity-supervision.md)
-> **文档版本**：v1.0
-> **最后更新**：2026-06-04
+> **文档版本**：v1.2
+> **最后更新**：2026-06-28
 
 ---
 
@@ -15,7 +15,7 @@
 
 廉洁监察模块不设置自主决策型“模块主 Agent”。模块主控为 `integrity-supervision-graph`，负责 6 阶段流程推进、条件路由、HITL、外部事件触发、恢复和归档。
 
-本模块使用 `integrity-supervision-agent-profile` 作为 AI 能力配置入口，统一定义知识范围、工具权限、Prompt 包、模型路由和输出 schema。下列 Agent 均为 Stage Agent，只在对应阶段内生成结构化建议、证据引用和人工关注点，不直接修改案件终态，不绕过人工守门。
+本模块使用 `integrity-supervision-agent-profile` 作为 AI 能力配置入口，统一定义知识范围、Skill 权限、工具权限、Prompt 包、模型路由和输出 schema。下列 Agent 均为 Stage Agent 或只读辅助 Agent，只在授权阶段内执行业务 Skill、生成结构化建议、证据引用和人工关注点，不直接修改案件终态，不绕过人工守门。
 
 > 统一架构约束见 [00-agent-architecture.md](00-agent-architecture.md)。
 
@@ -23,22 +23,70 @@
 profile_id: integrity-supervision-agent-profile
 module: integrity_supervision
 module_graph: integrity-supervision-graph
+schema_version: "1.1"
 knowledge_scopes:
   - kb_integrity_policy
   - kb_integrity_cases
   - kb_law_and_regulation
   - kb_disposition_template
+allowed_skills:
+  - integrity-intake-triage-skill
+  - integrity-evidence-profiling-skill
+  - integrity-case-complexity-skill
+  - integrity-investigation-plan-skill
+  - integrity-investigation-advisor-skill
+  - integrity-multi-source-analysis-skill
+  - integrity-evidence-sufficiency-skill
+  - integrity-disposition-reasoning-skill
+  - integrity-enforcement-coordination-skill
+  - integrity-post-report-package-skill
 allowed_tools:
   - rag_search
   - evidence_search
-  - sql_analyze_readonly
+  - text2sql_generate
+  - text2sql_validate
+  - text2sql_execute_readonly
   - doc_generate
   - a2a_send
   - external_sync_outbox
+  - ocr_result_query
+  - audio_transcribe_query
+  - entity_resolution
+  - personnel_match
+  - evidence_chain_validate
+  - legal_article_validate
+  - timeline_reconstruct
+  - penalty_precedent_search
+  - mdm_blacklist_sync
+  - oa_bpm_push
+  - risk_control_sync
+  - risk_control_case_query
+  - risk_control_attachment_query
+  - doc_generate_guidance
+data_scopes:
+  - purchase
+  - supplier
+  - finance
+  - hr_basic
+  - risk_control_case
+  - contract
+context_policy:
+  default_token_budget: 32000
+  reserved_output_tokens: 4096
+  include_previous_approved_outputs: true
+  include_agent_raw_outputs: false
+  include_human_edits: true
+  evidence_mode: refs_plus_relevant_snippets
+  knowledge_mode: hybrid_rag
+  pii_redaction: role_based
+  snapshot_required: true
+  fail_on_policy_violation: true
 quality_gates:
   require_citations: true
   require_evidence_chain: true
   require_human_review: true
+  require_skill_runs: true
+  max_evidence_loop_count: 2
 ```
 
 ### 1.1 Agent 清单
@@ -50,6 +98,9 @@ quality_gates:
 | `analysis-agent` | 分析报告 Agent | 数据分析师 | [4.3] 多维分析+报告 | 🔴 高 | ✅ 已实现 |
 | `disposition-agent` | 处置分流 Agent | 法律顾问 | [4.4] 处置分流+追责 | 🔴 高 | ✅ 已实现 |
 | `enforcement-agent` | 处罚执行 Agent | 执行协调员 | [4.5] 处罚执行+跟踪 | 🟡 中 | ✅ 已实现 |
+| `post-report-agent` | 报案协助 Agent | 报案材料协助员 | [4.6] 报案后续资料指引 | 🟢 低 | ✅ 轻量级 |
+| `investigation-advisor` | 调查策略顾问 | 调查策略复盘员 | 并行辅助：调查后/分析前 | 🟡 中 | 📌 设计纳入 |
+| `case-complexity-assessor` | 案件复杂度评估器 | 案件分级评估员 | 并行辅助：初筛阶段 | 🟢 低 | 📌 设计纳入 |
 
 ### 1.2 工作流位置
 
@@ -148,6 +199,58 @@ quality_gates:
               └──────┘ └──────┘ └──────┘ └──────┘
 ```
 
+### 1.4 Multi-Agent 架构决策（合并 01b 结论）
+
+廉洁监察模块采用 **确定性 Pipeline + HITL 守门 + 证据驱动回退循环**。主干流程仍由 `integrity-supervision-graph` 控制，Agent 不拥有阶段跳转权；Agent Skill 只在授权阶段内生成建议、证据结构和待审批输出。
+
+```text
+主干 Pipeline (LangGraph 确定性控制)
+  intake
+    ├── 不处理 / 转交 → END 或 Outbox
+    └── 继续调查 → investigation → analysis
+                                      ├── 证据充分 → disposition
+                                      ├── 证据部分充分 → disposition + low confidence
+                                      └── 证据不足 → evidence_supplement_gate
+                                                        ├── 未超上限 → investigation
+                                                        └── 超过上限 → human_escalation
+
+并行辅助层（只读建议，不控制流程）
+  case-complexity-assessor  → complexity_level / priority_hint / routing_evidence
+  investigation-advisor     → evidence_gap_review / alternative_investigation_steps
+```
+
+#### 为什么不是 Supervisor 路由
+
+廉洁监察涉及人员处分、供应商黑名单、民事追责和刑事报案。此类决策必须有明确的人类决策链路和可审计依据，因此不允许由 Supervisor Agent 通过 LLM 路由直接决定是否追责、是否移送司法或是否跳过调查阶段。跨阶段流程、回退、恢复和终态写入全部保留在 LangGraph 确定性规则与 HITL 守门中。
+
+#### 与风险监控的增强机制差异
+
+| 维度 | 廉洁监察 | 风险监控 |
+|------|----------|----------|
+| 增强机制 | 证据驱动回退循环 | 异常哨兵 / 规则优化旁路 |
+| 触发条件 | 证据充分性不足 | 扫描成功率低、uncertain 过多、误报率高 |
+| 响应方式 | 回退到 `investigation` 补充调查 | 激活旁路哨兵 Agent，不改变主干方向 |
+| 循环性 | 支持有限回退，最大 2 次 | 哨兵处理后继续向前，不循环 |
+| 辅助能力 | 调查策略顾问、案件复杂度评估器 | 规则优化、未知风险发现 |
+
+### 1.5 证据驱动回退循环
+
+`analysis-agent` 必须输出结构化 `evidence_sufficiency`，由 `integrity-supervision-graph` 的确定性路由函数读取。LLM 只能说明证据缺口和建议补充方向，不能自行推进回退。
+
+| 证据充分性 | 系统行为 | 携带信息 | 最大回退次数 |
+|------------|----------|----------|--------------|
+| `sufficient` | 正常进入 `disposition-agent` | 证据链、事实清单、置信度 | 0 |
+| `partial` | 进入 `disposition-agent`，但强制标记 `confidence=low|medium` | 缺口说明、人工关注点 | 0 |
+| `insufficient` | 进入 `evidence_supplement_gate`，未超上限则回退 `investigation-agent` | 缺失证据清单、建议调查方向、已尝试路径 | 2 |
+| 超过上限 | 进入 `human_escalation` | 历次缺口、回退历史、人工决策选项 | — |
+
+回退安全规则：
+
+- `evidence_loop_count` 存在 workflow state 中，不由 Agent 自行维护。
+- 同一证据缺口重复出现时，必须提示“补充调查未解决原缺口”，不得无限生成相同调查建议。
+- 回退后的 `investigation-agent` 输入必须包含 `evidence_gap_review` 和 `previous_evidence_gaps`。
+- 达到上限后只允许人工选择：继续补充调查、降低标准结案、转人工专项处理或关闭案件。
+
 ---
 
 ## 二、模块 Agent 依赖与 SLA 链
@@ -159,10 +262,10 @@ intake-agent ──(案件上下文JSON)──→ investigation-agent
                                        │
                                        ├──(调查方案)──→ analysis-agent
                                        │                   │
-                                       │                   ├── SQL数据分析 (sync_queue)
-                                       │                   ├── 语音转文字查询 (Search Adapter + Milvus)
-                                       │                   ├── 全文检索证据 (Elasticsearch/OpenSearch)
-                                       │                   ├── 相似证据检索 (Milvus)
+                                       │                   ├── Text2SQL数据核验 (sync_queue + HITL)
+                                       │                   ├── RAG证据/知识检索 (Search + Milvus)
+                                       │                   ├── 语音转文字/OCR结果查询
+                                       │                   ├── data_refs / evidence_refs 聚合
                                        │                   └── 报告生成 (report_queue)
                                        │                   │
                                        ▼                   ▼
@@ -188,7 +291,7 @@ intake-agent ──(案件上下文JSON)──→ investigation-agent
 |-------|----------|----------|----------|-------------|
 | `intake-agent` | < 8s | < 15s | < 25s | KB检索 (2-3次) + LLM推理 (1-2次) |
 | `investigation-agent` | < 10s | < 20s | < 30s | KB检索 (3-4次，含历史案例相似度匹配) + LLM推理 (1次) |
-| `analysis-agent` | < 30s | < 60s | < 90s | 多工具调用 (SQL + Search Adapter + Milvus) + LLM推理 (2-3次) + 报告生成 |
+| `analysis-agent` | < 30s | < 60s | < 90s | Text2SQL + RAG证据检索 + LLM推理 (2-3次) + 报告生成 |
 | `disposition-agent` | < 10s | < 20s | < 30s | KB检索 + LLM推理 + 可选报案书生成 |
 | `enforcement-agent` | < 15s | < 30s | < 45s | 文档生成 + 多路A2A通信 + 外部系统同步 |
 | **端到端工作流** | **< 5min** | **< 8min** | **< 12min** | 含碳基守门等待（~2-4min）+ Agent间数据传输 + 人工审核节点 |
@@ -197,7 +300,7 @@ intake-agent ──(案件上下文JSON)──→ investigation-agent
 
 | 瓶颈点                         | 风险                | 缓解措施                                               |
 | --------------------------- | ----------------- | -------------------------------------------------- |
-| `analysis-agent` 多工具调用串行    | P95延迟可能超60s       | SQL、Search Adapter、Milvus 三路检索并行化；报告生成与 LLM 推理流水线化 |
+| `analysis-agent` 多共享能力调用串行 | P95延迟可能超60s       | Text2SQL、RAG证据检索、ASR/OCR结果查询并行化；报告生成与 LLM 推理流水线化 |
 | `enforcement-agent` 多路A2A通信 | 任一外部Agent超时阻塞整体流程 | A2A通信异步化，发送即返回task_id，后续通过回调/轮询获取结果                |
 | KB检索串行调用>3次                 | 累积延迟超5s           | 同类型检索合并为批量调用；增加Redis缓存层(5min TTL)                  |
 | LLM推理排队                     | 高并发时llm_queue深度过大 | 按案件优先级调度；intake-agent优先于enforcement-agent          |
@@ -215,19 +318,53 @@ intake-agent ──(案件上下文JSON)──→ investigation-agent
 | `kb_analysis` | 过往调查报告、报告模板及格式要求 | analysis-agent | Milvus 向量召回 + Search Adapter 全文召回 |
 | `kb_disposition` | 公司制度文件、追责审批流程、组织架构及分权 | disposition-agent, enforcement-agent | 混合检索 (Milvus + Search Adapter) |
 | `kb_enforcement` | 黑名单管理制度、赔偿协议模板、处罚公告模板、人员架构 | enforcement-agent | 混合检索 (Milvus + Search Adapter) |
+| `kb_post_report` | 报案材料清单、公安/检察院常见补充问题、历史报案后续资料指引 | post-report-agent | 混合检索 (Milvus + Search Adapter) |
 
-### 3.2 共享工具
+### 3.2 Agent Skill 清单
+
+Skill 是廉洁监察 Agent 的业务能力封装层。Stage Agent 优先调用授权 Skill；Skill 内部再编排 Tool、Prompt、上下文、校验和降级策略。所有 Skill 执行必须写入 `skill_runs`，包括 `skill_run_id`、输入摘要、输出摘要、内部 Tool 调用、耗时、成本、降级原因和 HITL 结果。
+
+| Skill ID | 业务能力 | 使用 Agent | 内部核心 Tool | 输出 | 降级策略 |
+|----------|----------|------------|---------------|------|----------|
+| `integrity-intake-triage-skill` | 线索初筛、分流、不予处理/转交建议 | intake-agent | `kb_search_intake`, `es_search_similar_cases`, `ocr_result_query`, `audio_transcribe_query`, `entity_resolution` | 初判报告、分流建议、人工关注点 | KB/ES 不可用时输出 `knowledge_insufficient`，进入人工初筛 |
+| `integrity-evidence-profiling-skill` | 对附件、录音、OCR、结构化字段做证据画像 | intake-agent, analysis-agent | `evidence_search`, `ocr_result_query`, `audio_transcribe_query`, `timeline_reconstruct` | 证据索引、时间线、证据缺口 | 多模态结果未完成时标记待补充，不阻塞初筛 |
+| `integrity-case-complexity-skill` | 案件复杂度评估和优先级提示 | case-complexity-assessor, intake-agent | `entity_resolution`, `risk_control_case_query`, `kb_search_intake` | `complexity_level`, `priority_hint`, 复杂度因子 | 只做信息展示，不改变路由；因子不足时返回 `unknown` |
+| `integrity-investigation-plan-skill` | 调查方案、访谈对象、数据需求清单生成 | investigation-agent | `kb_search_investigation`, `es_search_similar_cases`, `personnel_match`, `doc_generate_excel` | 调查方案 JSON + Excel | 文档生成失败时保留 JSON 方案 |
+| `integrity-investigation-advisor-skill` | 调查策略复盘、证据缺口和替代调查方向建议 | investigation-advisor, investigation-agent | `evidence_chain_validate`, `timeline_reconstruct`, `kb_search_investigation`, `penalty_precedent_search` | `evidence_gap_review`, `alternative_steps` | 只读建议；必须经 HITL 采纳后才能进入调查方案 |
+| `integrity-multi-source-analysis-skill` | Text2SQL 数据核验、证据、访谈、走访多源分析和报告生成 | analysis-agent | `text2sql_generate`, `text2sql_validate`, `text2sql_execute_readonly`, `es_evidence_search`, `milvus_similar_evidence`, `kb_search_analysis`, `report_generate` | 案件结论、报告草稿、证据链、`data_refs` | 部分数据不可用时输出 partial data 标记和缺口 |
+| `integrity-evidence-sufficiency-skill` | 证据充分性判定和回退建议 | analysis-agent | `evidence_chain_validate`, `timeline_reconstruct`, `legal_article_validate` | `evidence_sufficiency`, 缺失证据清单 | 达到回退上限后强制 `human_escalation` |
+| `integrity-disposition-reasoning-skill` | 法律路径、追责意见、刑民内部处分分流 | disposition-agent | `kb_search_disposition`, `legal_article_validate`, `penalty_precedent_search`, `doc_generate_criminal_report`, `a2a_send_cicero` | 路径建议、追责意见、报案书任务 | 法条校验失败时所有引用标为待人工核实 |
+| `integrity-enforcement-coordination-skill` | 处罚公告、赔偿协议、A2A 分发、黑名单和风控闭环 | enforcement-agent | `doc_generate_announcement`, `doc_generate_agreement`, `a2a_send_guibao`, `a2a_send_cicero`, `a2a_send_porter`, `mdm_blacklist_sync`, `oa_bpm_push`, `risk_control_sync` | Outbox 任务、公告/协议草稿、同步状态 | 外发失败进入 Outbox 重试，不阻塞已完成分支 |
+| `integrity-post-report-package-skill` | 公安/检察院补充问题资料包和提取指引 | post-report-agent | `kb_search_post_report`, `evidence_search`, `doc_generate_guidance`, `risk_control_attachment_query` | 资料提取指引、逐问题建议 | 不编造数据源；缺资料时输出审批/补充清单 |
+
+### 3.3 共享工具
 
 | 工具 | 用途 | 使用Agent | 类型 |
 |------|------|-----------|------|
-| `kb_search` | 知识库混合检索 | 全部5个Agent | 同步 |
+| `kb_search` | 知识库混合检索 | 全部 Agent / Skill | 同步 |
 | `es_search` | Elasticsearch 全文检索 | intake-agent, investigation-agent, analysis-agent | 同步 |
 | `audio_transcribe_query` | 查询已完成的语音转文字结果 | intake-agent, analysis-agent | 同步 |
+| `ocr_result_query` | 查询已完成 OCR / 表格抽取结果 | intake-agent, analysis-agent, post-report-agent | 同步 |
+| `entity_resolution` | 人员、供应商、经销商、组织主体标准化与消歧 | intake-agent, case-complexity-assessor | 同步 |
+| `timeline_reconstruct` | 根据证据时间戳重建关键事件时间线 | analysis-agent, investigation-advisor | 同步 |
 | `doc_generate` | Word/Excel 文档生成 | investigation-agent, analysis-agent, enforcement-agent | 异步 (report_queue) |
 | `a2a_send` | 发送A2A任务到外部Agent | intake-agent, enforcement-agent | 异步 (a2a_queue) |
-| `sql_analyze` | 业务数据SQL查询分析 | analysis-agent | 异步 (sync_queue) |
+| `text2sql_generate` | 生成只读数仓 SQL 和查询计划 | analysis-agent | 同步/异步，需进入 HITL 预览 |
+| `text2sql_validate` | 校验人工或模型生成 SQL 的 AST、权限、成本和策略注入 | analysis-agent | 同步 |
+| `text2sql_execute_readonly` | 执行已审批、hash 匹配、策略版本有效的只读 SQL | analysis-agent | 异步 (sync_queue)，只读 |
+| `personnel_match` | 按岗位、部门、审批链和历史参与人匹配访谈对象 | investigation-agent | 同步 |
+| `evidence_chain_validate` | 校验证据链完整性、矛盾和引用可追溯性 | analysis-agent, investigation-advisor | 同步 |
+| `legal_article_validate` | 校验法条、制度条款和引用片段是否一致 | analysis-agent, disposition-agent | 同步 |
+| `penalty_precedent_search` | 检索历史相似处分、赔偿、黑名单先例 | disposition-agent, investigation-advisor | 同步 |
+| `mdm_blacklist_sync` | MDM 黑名单同步，必须经 Outbox 和人工确认 | enforcement-agent | 异步 (sync_queue) |
+| `oa_bpm_push` | OA/BPM 审批推送 | enforcement-agent | 异步 (sync_queue) |
+| `risk_control_sync` | 风控系统闭环状态回写 | enforcement-agent | 异步 (sync_queue) |
+| `risk_control_case_query` | 只读查询风控系统案件、附件和历史状态 | intake-agent, case-complexity-assessor, post-report-agent | 同步，只读 |
+| `risk_control_attachment_query` | 只读查询风控系统附件、报案材料、外部问题清单关联文件 | post-report-agent, analysis-agent | 同步，只读 |
+| `kb_search_post_report` | 报案后续资料和外部问询知识检索 | post-report-agent | 同步 |
+| `doc_generate_guidance` | 生成公安/检察院补充资料提取指引 | post-report-agent | 异步 (report_queue) |
 
-### 3.3 共享 LLM 配置
+### 3.4 共享 LLM 配置
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
@@ -237,6 +374,33 @@ intake-agent ──(案件上下文JSON)──→ investigation-agent
 | 默认超时 | 30s | 单次LLM调用超时（部分Agent按需覆盖：analysis-agent 45s、risk-rule-agent 45s、risk-analysis 子阶段1 60s） |
 | 默认重试 | 2次 | 指数退避 (2s, 4s) |
 | 输出格式 | JSON Mode / Function Calling | 根据Agent选择 |
+
+### 3.5 Agent-Skill 编排总表
+
+| Agent | 主 Skill 编排 | HITL / 路由点 | 可直接调用 Tool 的例外 |
+|-------|---------------|---------------|------------------------|
+| `intake-agent` | `integrity-evidence-profiling-skill` → `integrity-intake-triage-skill` → `integrity-case-complexity-skill` | 初筛分流必须经人工确认；转交外部只写 Outbox | 健康检查、schema 校验、幂等锁 |
+| `case-complexity-assessor` | `integrity-case-complexity-skill` | 当前只展示复杂度，不改变路由；未来快速通道需单独审批启用 | 无 |
+| `investigation-agent` | `integrity-investigation-plan-skill`；若来自证据回退则先读取 `integrity-evidence-sufficiency-skill` 输出 | 调查方案、访谈对象、数据需求清单需人工确认 | 文档生成任务状态查询 |
+| `investigation-advisor` | `integrity-investigation-advisor-skill` | 建议必须由碳基采纳/修改后采纳，不能自动覆盖方案 | 无 |
+| `analysis-agent` | `integrity-evidence-profiling-skill` → `integrity-multi-source-analysis-skill` → `integrity-evidence-sufficiency-skill` | `insufficient` 触发确定性回退；报告和结论必须人工确认 | 多源任务进度查询 |
+| `disposition-agent` | `integrity-disposition-reasoning-skill` | 刑事/民事/内部追责路径由人工确认；刑事建议需双签 | 法条缓存查询 |
+| `enforcement-agent` | `integrity-enforcement-coordination-skill` | 处罚公告、协议、黑名单、扣款和外发任务必须人工确认 | Outbox 状态查询 |
+| `post-report-agent` | `integrity-post-report-package-skill` | 外部问题清单和资料提取指引由人工确认后交付 | 资料包下载状态查询 |
+
+原则：业务推理、检索组合、报告生成、A2A 外发和外部同步均应通过 Skill 承载；直接 Tool 调用只允许用于平台型辅助能力，不得形成绕过 Skill 的隐式业务流程。
+
+### 3.6 共享能力在 Agent 内的嵌入方式
+
+本模块引用 [10-rag-shared-agent.md](10-rag-shared-agent.md)、[11-text2sql-shared-agent.md](11-text2sql-shared-agent.md) 和 [09-context-engineering.md](09-context-engineering.md) 的共享能力设计。01 文档中的 `kb_search_*`、`es_*`、`milvus_*`、`sql_*` 名称均为业务语义别名，生产实现必须收敛到以下统一入口，不允许 Stage Agent 私自连接 Search、Vector、MinIO、PostgreSQL 或 Doris。
+
+| 共享能力 | 01 内部体现 | 调用入口 | Agent 侧必须遵守 |
+|----------|-------------|----------|------------------|
+| RAG Orchestrator | `integrity-*-skill` 内部的知识检索、证据检索、相似案例、模板和制度引用 | `Business Retrieval Adapter -> RAGRequest -> RAGOrchestrator.retrieve()` | 必须携带 `RetrievalIntent`、`module`、`stage`、`case_id`、`trace_id`、`tenant_scope`；`knowledge_insufficient=true` 时降低置信度 |
+| Text2SQL Orchestrator | `analysis-agent` 的结构化数据核验、供应商/采购/费用/合同/HR 基础数据查询 | `BaseStageAgent._query_data() -> Text2SQL Orchestrator` | 不直接拼 SQL；`execute_readonly` 必须有 `approval_id + approved_sql_hash`；结果只以 `summary + data_refs + diagnostics` 进入报告上下文 |
+| Context Builder | 所有 Agent 的标准输入、上下文裁剪、人工修改传递、上下文快照和审计回放 | `ContextBuilder.build() -> ContextEnvelope` | 只读取已审批上游产物；不注入被人工删除的 AI 草稿；每次 Agent 调用必须写 `context_snapshot_id` |
+
+`skill_runs`、`tool_calls`、`rag_call_id`、`query_id` 和 `context_snapshot_id` 必须进入同一 `trace_id`，供 LangFuse、审计日志和问题回放串联。
 
 ---
 
@@ -587,10 +751,11 @@ DeepSeek 上下文窗口 64K tokens，intake-agent 分配如下：
 | **已使用** | **~14,200** | **22.2%** | — |
 | **剩余 (缓冲)** | **~49,800** | **77.8%** | 应对大文件文本注入和未来扩展 |
 
-> 当案件详情 + 附件文本总计 > 40K tokens 时，启用自动摘要压缩：
-> - 语音转文字全文 → LLM摘要(≤800 tokens)
-> - OCR全文 → 仅保留关键词匹配段落(≤500 tokens)
-> - 附件文本 → 按相关度排序，保留top-10段落
+> 当案件详情 + 附件文本总计 > 40K tokens 时，启用 Context Compressor 的结构化压缩：
+> - 语音转文字全文 → 关键 Q&A、说话人、时间戳、矛盾点和访谈 `evidence_ref`
+> - OCR全文 → 金额、日期、主体、签章、审批链、异常字段和文件页码/区域引用
+> - 附件文本 → 按相关度排序保留关键片段，同时记录被排除材料的 `dropped_refs`
+> - 压缩后必须通过 `ContextCompressionGate`；若供应商、金额、时间、人工意见或证据引用缺失，则返回 `context_insufficient`，不生成初判结论
 
 ### 4.8 工具定义
 
@@ -707,7 +872,7 @@ DeepSeek 上下文窗口 64K tokens，intake-agent 分配如下：
             "summary_only": {
                 "type": "boolean",
                 "default": false,
-                "description": "是否仅返回摘要（true=LLM摘要 ≤500 tokens/file，false=完整转录文本）"
+                "description": "是否仅返回结构化摘要（true=摘要≤500 tokens/file且保留时间戳/说话人/ref，false=完整转录文本）"
             }
         },
         "required": ["file_ids"]
@@ -718,7 +883,7 @@ DeepSeek 上下文窗口 64K tokens，intake-agent 分配如下：
             "type": "object",
             "properties": {
                 "file_id": {"type": "string"},
-                "text": {"type": "string", "description": "完整转录文本或LLM摘要"},
+                "text": {"type": "string", "description": "完整转录文本或保留引用的结构化摘要"},
                 "language": {"type": "string"},
                 "duration_seconds": {"type": "number"},
                 "speakers": {"type": "array", "items": {"type": "string"}},
@@ -1268,7 +1433,7 @@ class InvestigationAgentOutput(BaseModel):
 
 | 示例ID | 类型 | 场景描述 | 更新触发条件 |
 |--------|------|----------|-------------|
-| `invest-example-01` | 正面 | 供应商利益输送调查方案（包含SQL数据筛选、供应商工商信息调取、采购订单比对） | — |
+| `invest-example-01` | 正面 | 供应商利益输送调查方案（包含 Text2SQL 数据筛选、供应商工商信息调取、采购订单比对） | — |
 | `invest-example-02` | 正面 | 员工职务侵占调查方案（包含费用报销审查、资产使用核查、关联公司排查） | 新侵占模式出现时 |
 | `invest-example-03` | 反面 | 方案过于模糊（如"调查相关人员"而非指定具体角色和数据源） | — |
 
@@ -1422,7 +1587,7 @@ class InvestigationAgentOutput(BaseModel):
 
 | 用例ID | 场景 | 期望输出 | 评估维度 |
 |--------|------|----------|----------|
-| `invest-golden-01` | 供应商利益输送（标准场景） | 含SQL数据筛选+供应商工商调查+采购订单比对+访谈采购部和财务部 | 方案完整性 |
+| `invest-golden-01` | 供应商利益输送（标准场景） | 含 Text2SQL 数据筛选+供应商工商调查+采购订单比对+访谈采购部和财务部 | 方案完整性 |
 | `invest-golden-02` | 员工职务侵占（无供应商） | 含费用报销审查+资产使用核查+关联公司排查，供应商相关项为空 | 方案针对性 |
 | `invest-golden-03` | 初次调查无历史案例 | 方案基于通用方法论生成，标记"无相似案件参考" | 降级处理 |
 | `invest-golden-04` | 复杂跨部门案件 | 含多部门协作计划，访谈目标覆盖3个以上部门 | 复杂场景覆盖 |
@@ -1484,8 +1649,8 @@ class InvestigationAgentOutput(BaseModel):
   子状态 (DATA_GATHER):
   ┌─────────────────────────────────────────────────────────────────┐
   │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────┐ │
-  │  │ SQL_DB_QUERY│  │ SEARCH      │  │ Milvus      │  │ AUDIO   │ │
-  │  │ 数据中台查询 │  │ 全文检索证据  │  │ _SIMILAR   │  │ _ANALYSIS│ │
+  │  │ TEXT2SQL    │  │ RAG SEARCH  │  │ RAG VECTOR  │  │ AUDIO   │ │
+  │  │ 数据核验     │  │ 全文检索证据  │  │ _SIMILAR   │  │ _ANALYSIS│ │
   │  │             │  │             │  │ 相似证据检索  │  │ 音频分析  │ │
   │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────┘ │
   │       (4路并行，各自独立超时和降级)                                │
@@ -1507,7 +1672,8 @@ class AnalysisAgentInput(BaseModel):
     investigation_context: dict = Field(..., description="investigation-agent上下文（含调查方案+数据需求）")
 
     # 碳基上传的数据（经过人工收集后上传）
-    sql_analysis_results: Optional[List[dict]] = Field(None, description="数据中台SQL分析结果")
+    text2sql_results: Optional[List[dict]] = Field(None, description="Text2SQL返回的脱敏摘要、异常样本、data_refs和diagnostics")
+    sql_analysis_results: Optional[List[dict]] = Field(None, description="兼容字段：历史人工SQL分析结果或迁移前数据中台SQL结果")
     system_analysis_results: Optional[List[dict]] = Field(None, description="其他智能体分析报告")
     manual_upload_results: Optional[List[dict]] = Field(None, description="人工上传的原始数据分析结果")
 
@@ -1521,6 +1687,10 @@ class AnalysisAgentInput(BaseModel):
 
     # 证据
     evidence_files: List[str] = Field(default_factory=list, description="所有证据文件ID列表")
+    evidence_loop_context: Optional[dict] = Field(
+        None,
+        description="证据回退上下文: {loop_count, previous_evidence_gaps, adopted_advisor_suggestions}",
+    )
 
     context_version: str = Field(default="1.0")
 ```
@@ -1528,6 +1698,15 @@ class AnalysisAgentInput(BaseModel):
 #### 输出 (AnalysisAgentOutput)
 
 ```python
+class EvidenceSufficiencyReview(BaseModel):
+    """证据充分性判定，用于 LangGraph 确定性路由"""
+    level: Literal["sufficient", "partial", "insufficient"] = Field(..., description="证据充分性等级")
+    missing_evidence: List[str] = Field(default_factory=list, description="仍缺失的关键证据")
+    suggested_followup_actions: List[str] = Field(default_factory=list, description="建议补充调查方向")
+    repeated_gaps: List[str] = Field(default_factory=list, description="历次回退仍未解决的证据缺口")
+    loop_count: int = Field(default=0, description="当前证据回退次数，由workflow注入")
+    should_loop_back: bool = Field(default=False, description="是否建议回退；最终路由由workflow决定")
+
 class CaseConclusion(BaseModel):
     """案件结论结构"""
     conclusion_summary: str = Field(..., description="结论摘要 (≤500字)")
@@ -1551,7 +1730,7 @@ class AnalysisAgentOutput(BaseModel):
     # 置信度
     confidence: str = Field(..., description="置信度")
     confidence_reason: str = Field(..., description="置信度判断理由")
-    evidence_sufficiency: str = Field(..., description="证据充分性: sufficient/partial/insufficient")
+    evidence_sufficiency: EvidenceSufficiencyReview = Field(..., description="证据充分性判定和回退建议")
 
     # 输出文件
     conclusion_doc_id: Optional[str] = Field(None, description="案件结论报告 Word文档 object key")
@@ -1561,6 +1740,7 @@ class AnalysisAgentOutput(BaseModel):
     processing_time_ms: int = Field(...)
     tools_used: List[str] = Field(default_factory=list)
     kb_sources: List[str] = Field(default_factory=list)
+    data_refs: List[str] = Field(default_factory=list, description="Text2SQL结果引用: query_id/sql_hash/result_snapshot")
     retry_count: int = Field(default=0)
 
     # 下游上下文
@@ -1582,7 +1762,7 @@ class AnalysisAgentOutput(BaseModel):
 
 【核心任务】
 基于调查方案执行后的多源数据（中台数据分析结果、访谈记录、现场走访报告、证据文件），完成：
-1. **多维数据碰撞分析**：交叉比对SQL数据+访谈+走访+证据，发现矛盾或印证关系
+1. **多维数据碰撞分析**：交叉比对 Text2SQL 数据摘要、`data_refs`、访谈、走访和证据，发现矛盾或印证关系
 2. **证据链构建**：将散落的证据串联成可追溯的完整证据链
 3. **案件结论生成**：汇总确认事实、无法确认的主张、涉及方、涉案金额
 4. **廉洁监察报告撰写**：按标准模板生成完整的调查报告
@@ -1599,7 +1779,8 @@ class AnalysisAgentOutput(BaseModel):
 
 【上游案件上下文】 {{INTAKE_CONTEXT}}
 
-【数据分析结果】 {{SQL_ANALYSIS_RESULTS}}
+【结构化数据核验结果】 {{TEXT2SQL_RESULTS}}
+【兼容历史SQL分析结果】 {{SQL_ANALYSIS_RESULTS}}
 【智能体分析结果】 {{SYSTEM_ANALYSIS_RESULTS}}
 【人工上传数据】 {{MANUAL_UPLOAD_RESULTS}}
 【访谈记录】 {{INTERVIEW_TRANSCRIPTS}}
@@ -1625,7 +1806,7 @@ class AnalysisAgentOutput(BaseModel):
 | Few-shot 示例 | ~1,500 | 2.3% |
 | KB检索注入 | ~2,000 | 3.1% |
 | 上游上下文（intake + investigation） | ~3,000 | 4.7% |
-| 数据分析结果（SQL+系统+人工） | ~5,000 | 7.8% |
+| 结构化数据核验结果（Text2SQL摘要+data_refs+兼容历史SQL结果） | ~5,000 | 7.8% |
 | 访谈记录（摘要） | ~3,000 | 4.7% |
 | 现场走访 | ~2,000 | 3.1% |
 | 证据文本（关键段落） | ~4,000 | 6.3% |
@@ -1633,13 +1814,15 @@ class AnalysisAgentOutput(BaseModel):
 | **已使用** | **~25,700** | **40.2%** |
 | **剩余缓冲** | **~38,300** | **59.8%** |
 
-> analysis-agent 是token消耗最大的Agent，因为需要注入多源数据。当输入超过40K tokens时，自动触发摘要压缩：数据分析结果仅保留异常数据行、访谈记录仅保留关键QA对、证据仅保留高相关度段落。
+> analysis-agent 是 token 消耗最大的 Agent，因为需要注入多源数据。当输入超过 40K tokens 时，触发结构化摘要压缩和压缩门禁：Text2SQL 结果保留脱敏聚合摘要、异常样本、query_id、sql_hash、数据范围、diagnostics 和 `data_refs`；访谈记录保留关键 Q&A、说话人、时间戳、矛盾点和 `evidence_refs`；证据文本保留支撑结论的关键片段和来源引用。若压缩后缺少结论支撑引用、人工审批意见或关键事实冲突，analysis-agent 必须返回 `context_insufficient`，不得继续生成定性结论。
 
 ### 6.8 工具定义
 
 | 工具ID | 名称 | 用途 | 超时 | 重试 | 执行模式 |
 |--------|------|------|------|------|----------|
-| `sql_data_query` | SQL数据分析 | 执行业务数据SQL查询，获取结构化分析结果 | 15s | 1 | 异步 (sync_queue) |
+| `text2sql_generate` | Text2SQL生成 | 基于调查方案的数据需求生成 Doris 只读 SQL、访问表字段、成本和风险诊断 | 15s | 1 | 同步/异步，进入 HITL 预览 |
+| `text2sql_validate` | Text2SQL校验 | 对模型或人工修改 SQL 做 AST 安全校验、权限策略注入、二次 AST 校验和成本评估 | 5s | 1 | 同步 |
+| `text2sql_execute_readonly` | Text2SQL只读执行 | 执行已审批、hash匹配、策略版本有效的只读 SQL，返回脱敏摘要和 data_refs | 30s | 1 | 异步 (sync_queue) |
 | `es_evidence_search` | 证据全文检索 | 在Elasticsearch中跨证据文件全文检索关键词 | 5s | 1 | 同步 |
 | `milvus_similar_evidence` | 相似证据检索 | 基于向量相似度检索与已有证据相似的历史案件证据 | 5s | 1 | 同步 |
 | `audio_transcription_query` | 语音转文字查询 | 查询访谈/走访录音的转录结果 | 5s | 1 | 同步 |
@@ -1653,7 +1836,9 @@ class AnalysisAgentOutput(BaseModel):
   analysis-agent
            │
            ├── 阶段1: 并行数据收集（4路）
-           │   ├── sql_data_query（异步，提交任务 → 等待回调）
+           │   ├── text2sql_generate（生成SQL预览 + 风险诊断）
+           │   ├── text2sql_validate（人工修改后重新校验）
+           │   ├── text2sql_execute_readonly（审批后只读执行 → data_refs）
            │   ├── es_evidence_search（全文检索关键证据）
            │   ├── milvus_similar_evidence（相似证据检索）
            │   └── audio_transcription_query（语音转文字查询）
@@ -1665,7 +1850,7 @@ class AnalysisAgentOutput(BaseModel):
            │       注意: 此调用为可选，仅当 investigation_context 中有访谈需求时触发
            │
            ├── 阶段2: 聚合等待
-           │   └── 等待所有异步任务完成（含sql_data_query回调 + interview-agent返回）
+           │   └── 等待所有异步任务完成（含 Text2SQL 执行回调 + interview-agent返回）
            │
            ├── 阶段3: 知识检索
            │   └── kb_search_analysis（历史报告模板+类似案件结论）
@@ -1683,11 +1868,21 @@ class AnalysisAgentOutput(BaseModel):
 
 | 工具 | 校验规则 | 校验失败处理 |
 |------|----------|-------------|
-| `sql_data_query` | 返回结果集非空且格式正确 | 返回空 → 标记"该数据源无异常数据"（可能是正常情况）；格式错误 → 重试1次 |
+| `text2sql_generate` | 返回 `query_id`、`generated_sql`、`sql_hash`、表字段和 `human_review_required=true` | 生成失败 → 标记 `schema_insufficient` 或 `sql_generation_failed`，请求人工补充数据口径 |
+| `text2sql_validate` | `is_readonly=true`、无未授权表字段、`post_rewrite_validated=true` | 校验失败 → 不允许执行，返回 HITL 修改或人工接管 |
+| `text2sql_execute_readonly` | `approval_id`、`approved_sql_hash`、`policy_version` 均匹配，返回 `summary + data_refs + diagnostics` | 执行失败 → 标记"数据查询暂不可用"，不得把无数据解释为业务事实 |
 | `es_evidence_search` | 返回结果 ≥ 1条 | 返回空 → 标记"全文检索未找到匹配证据"，仅依赖向量检索和已有数据 |
 | `milvus_similar_evidence` | 返回结果 similarity ≥ 0.7 的 ≥ 1条 | similarity < 0.7 → 标记"无高度相似历史证据可参考" |
 | `evidence_chain_validate` | 返回 contradictions 为空 | 存在矛盾 → 在报告结论中标注"证据链存在以下矛盾: ..."，置信度降为 medium |
 | `report_generate` | 异步任务提交成功 | 提交失败 → 仅输出JSON结论，标记"报告生成失败" |
+
+**证据充分性路由输出要求**：
+
+| `evidence_sufficiency.level` | Agent 输出要求 | Workflow 行为 |
+|------------------------------|----------------|---------------|
+| `sufficient` | 必须列出支撑关键事实的证据链，`missing_evidence=[]` | 进入 `disposition-agent` |
+| `partial` | 必须列出缺口和风险提示，`confidence` 不得高于 `medium` | 进入 `disposition-agent`，HITL 界面突出缺口 |
+| `insufficient` | 必须列出 `missing_evidence`、`suggested_followup_actions` 和 `repeated_gaps` | 进入 `evidence_supplement_gate`，由确定性路由判断是否回退 |
 
 ### 6.11 LLM 配置
 
@@ -1704,7 +1899,8 @@ class AnalysisAgentOutput(BaseModel):
 
 | 故障场景 | 降级行为 |
 |----------|----------|
-| SQL数据查询超时 | 跳过SQL分析，仅基于已有数据（访谈+走访+证据）分析，标注"数据库查询暂不可用" |
+| Text2SQL生成/校验失败 | 不执行 SQL；标记 `schema_insufficient` 或 `sql_validation_failed`，请求补充数据字典或人工改写 |
+| Text2SQL只读执行超时 | 跳过结构化数据分析，仅基于已有数据（访谈+走访+证据）分析，标注"数据库查询暂不可用" |
 | Search Adapter 证据索引不可用 | 跳过全文检索，仅使用 Milvus 和已有数据，标注"全文检索暂不可用" |
 | Milvus 相似证据不可用 | 跳过相似证据比对，仅基于本案证据分析 |
 | 语音转文字查询失败 | 标记"部分音频未处理完成"，在报告中标注待补充 |
@@ -1724,7 +1920,7 @@ class AnalysisAgentOutput(BaseModel):
 
 analysis-agent 特有的异常场景：
 - **证据链矛盾**：evidence_chain_validate 返回矛盾 → Agent在结论中标注而非自行裁决
-- **多来源数据不一致**：SQL数据显示A，访谈说B → Agent标注差异，不自行选择相信哪一方
+- **多来源数据不一致**：Text2SQL 数据摘要显示A，访谈说B → Agent标注差异，不自行选择相信哪一方
 - **报告模板不兼容**：标准模板中某字段在本次案件中不适用 → 标注"N/A"
 - **分析结果超出长度限制**：输出超过 max_tokens → 将详细分析转为附件，结论仅保留关键摘要
 
@@ -1733,7 +1929,7 @@ analysis-agent 特有的异常场景：
 analysis-agent 守门界面是最复杂的，需展示：
 - **案件结论摘要**：一目了然的核心结论
 - **证据链可视化**：证据→事实→结论的关系图
-- **多源数据对比**：SQL vs 访谈 vs 走访 的交叉对比表
+- **多源数据对比**：Text2SQL 数据摘要 vs 访谈 vs 走访 的交叉对比表
 - **完整报告预览**：可滚动查看完整廉洁监察报告
 - **矛盾标注**：如有证据矛盾，红色高亮显示
 
@@ -1780,7 +1976,7 @@ analysis-agent 守门界面是最复杂的，需展示：
 | 用例ID | 场景 | 期望输出 | 评估维度 |
 |--------|------|----------|----------|
 | `analysis-golden-01` | 标准三方比对的完整场景（SQL+访谈+走访） | 交叉验证结论+完整证据链+报告 | 结论准确性 |
-| `analysis-golden-02` | 仅有SQL数据，无访谈和走访 | 基于数据分析的初步结论，标注"待访谈验证" | 数据缺失处理 |
+| `analysis-golden-02` | 仅有 Text2SQL 数据摘要，无访谈和走访 | 基于数据分析的初步结论，标注"待访谈验证" | 数据缺失处理 |
 | `analysis-golden-03` | SQL与访谈结论矛盾 | 标注矛盾点，不强行给结论 | 矛盾处理 |
 | `analysis-golden-04` | 证据链不完整（关键环节缺失） | 标注证据缺口，confidence ≤ medium | 证据充分性判断 |
 | `analysis-golden-05` | 涉及金额超1000万的大案 | 完整证据链+金额分层分析+风险升级标记 | 大案处理 |
@@ -1800,7 +1996,7 @@ analysis-agent 独有反馈分类：
 |--------|---------|-------------------|
 | LLM Token (输入) | ~18K tokens（多源数据）| ~18M tokens |
 | LLM Token (输出×3轮) | ~6K tokens | ~6M tokens |
-| SQL查询 | 1-3次 | — |
+| Text2SQL查询 | 1-3次 | — |
 | ES查询 | 1-2次 | — |
 | Embedding Token | ~2K tokens | ~2M tokens |
 | **单次总成本** | **~¥0.35** | **~¥350/月** |
@@ -2407,9 +2603,84 @@ enforcement-agent 独有反馈分类：
 
 ---
 
-## 九、报案后续协助（post-report-agent）轻量级设计
+## 九、并行辅助 Agent 设计
 
-### 9.1 设计决策：为什么不是完整Agent
+### 9.1 调查策略顾问（investigation-advisor）
+
+`investigation-advisor` 是并行辅助 Agent，不在主干 Pipeline 中，不控制 workflow 路由。它通过 `integrity-investigation-advisor-skill` 持续评估证据链完整性和调查方向质量，输出建议给 HITL 守门界面，由碳基决定采纳、修改后采纳或忽略。
+
+| 属性 | 值 |
+|------|-----|
+| **Agent ID** | `investigation-advisor` |
+| **运行模式** | 并行只读，不推进阶段 |
+| **触发时机** | investigation 阶段生成方案后、analysis 阶段发现证据缺口后、人工上传新证据后 |
+| **核心 Skill** | `integrity-investigation-advisor-skill` |
+| **权限** | 只读案件上下文、证据索引、历史案例和制度知识库；不可写案件状态 |
+| **输出** | `evidence_gap_review`、`alternative_investigation_steps`、`timeline_conflicts`、`new_lead_suggestions` |
+
+核心功能：
+
+| 功能 | 说明 | 产出 |
+|------|------|------|
+| 证据链完整性分析 | 判断当前证据是否覆盖人物、时间、行为、金额、审批链和受益关系 | 证据缺口清单 |
+| 替代调查方向建议 | 当前方向进展缓慢或证据不足时，提出可验证的新路径 | 补充调查步骤 |
+| 新线索关联 | 新证据是否关联到其他供应商、经销商、员工或历史案件 | 关联主体和建议检索 |
+| 时间线异常识别 | 检查关键事件顺序是否冲突、审批时间是否异常 | 时间线矛盾列表 |
+
+与主干关系：
+
+```text
+investigation ──→ evidence_collection ──→ analysis
+       │                                       │
+       └──→ investigation-advisor (parallel) ──┘
+                │
+                └── 建议 → HITL 守门
+                          ├── 采纳 → 合并到 investigation plan
+                          ├── 修改后采纳 → 写入 human_modified_context
+                          └── 忽略 → 保留审计记录，不影响主干
+```
+
+### 9.2 案件复杂度评估器（case-complexity-assessor）
+
+`case-complexity-assessor` 在初筛阶段并行运行，用 `integrity-case-complexity-skill` 评估案件复杂度、优先级和资源建议。当前版本只做信息展示和优先级提示，不启用简单案件快速通道路由；未来如需启用快速通道，必须另行设计 HITL 规则和回归测试。
+
+```python
+class CaseComplexityFactors(BaseModel):
+    """案件复杂度评估因子"""
+    financial_amount: float | None = None
+    involved_persons: int = 0
+    cross_department: bool = False
+    cross_border: bool = False
+    involves_senior_mgmt: bool = False
+    evidence_types: list[str] = []
+    legal_jurisdiction: list[str] = []
+    has_whistleblower: bool = False
+    case_age_days: int | None = None
+```
+
+| 等级 | 条件 | 当前系统行为 |
+|------|------|--------------|
+| `low` | 单人、金额 < 10 万、单一部门、证据类型 ≤ 2 | 标准流程，但在队列中标记低复杂度 |
+| `medium` | 2-5 人、金额 10-100 万、跨部门 | 标准流程 |
+| `high` | >5 人、金额 >100 万、跨境、涉及高管 | 标准流程 + 调查策略顾问增强 + 提高优先级 |
+| `critical` | 金额 >1000 万、涉及刑事、多司法管辖区 | 标准流程 + 调查策略顾问 + 风控负责人关注 + 优先处理 |
+| `unknown` | 关键因子不足 | 标记信息不足，不改变优先级 |
+
+### 9.3 辅助 Agent 合规约束
+
+| 约束 | 落地规则 |
+|------|----------|
+| 不新增万能主 Agent | 两个辅助 Agent 都不拥有流程控制权，不能调用 `resume` 或修改 workflow stage |
+| 不拥有全模块工具权限 | 只读检索、证据校验和复杂度评估工具可用；外发、同步、写入类工具禁用 |
+| 输出不成为业务终态 | 建议必须进入 HITL；人工未采纳时不影响主干输出 |
+| 不由 Worker 推进阶段 | 回退循环由 `route_after_analysis` 等确定性规则处理，辅助 Agent 只提供结构化建议 |
+| 不隐藏审批规则 | 复杂度等级、证据缺口和回退次数都作为字段暴露给守门界面 |
+
+---
+
+## 十、报案后续协助（post-report-agent）轻量级设计
+
+### 10.1 设计决策：为什么不是完整Agent
 
 [4.6] 报案后续协助阶段的任务是：碳基收到公安/检察院的外部问题清单后，Agent根据知识库给出资料提取指引。此阶段：
 - **不涉及自主决策**：Agent不需要判断或分流，只需要检索+匹配+输出指引
@@ -2418,7 +2689,7 @@ enforcement-agent 独有反馈分类：
 
 因此设计为**轻量级Agent**（复用intake-agent的检索工具但无独立System Prompt角色锚定），降低维护成本。
 
-### 9.2 核心逻辑
+### 10.2 核心逻辑
 
 ```
 碳基上传外部问题清单
@@ -2442,7 +2713,7 @@ enforcement-agent 独有反馈分类：
 └──────────────────────────────────────────┘
 ```
 
-### 9.3 输入/输出
+### 10.3 输入/输出
 
 ```python
 class PostReportInput(BaseModel):
@@ -2458,7 +2729,7 @@ class PostReportOutput(BaseModel):
     confidence: str
 ```
 
-### 9.4 关键约束
+### 10.4 关键约束
 - 不得编造不存在的数据源或系统功能
 - 涉及机密数据的提取建议需标注"需审批后获取"
 - 引用过往案件资料时需去标识化
@@ -2469,6 +2740,8 @@ class PostReportOutput(BaseModel):
 
 | 版本 | 日期 | 修订人 | 修订说明 |
 |------|------|--------|----------|
+| v1.2 | 2026-06-28 | Codex | 梳理前后文一致性；对齐 RAG Business Retrieval Adapter、Text2SQL Orchestrator 和 Context Builder，将 SQL 直连表述收敛为 Text2SQL 受控调用，并补充 context_policy、data_scopes、data_refs、context_snapshot_id 落地 |
+| v1.1 | 2026-06-28 | Codex | 引入 Agent Skill 封装层，补充生产级工具清单；合并 01b 架构结论，新增证据驱动回退循环、调查策略顾问和案件复杂度评估器设计 |
 | v1.0 | 2026-06-04 | — | 初始版本：覆盖廉洁监察模块6个Agent（含轻量级post-report-agent）的全部21个生产级设计维度 |
 
 ## 附录 B：后续模块待办
@@ -2674,7 +2947,7 @@ def scrub_pii(payload: dict) -> dict:
 
 ### D.8 多租户数据隔离实现
 
-所有Agent在执行KB检索、SQL查询和ES搜索时必须强制执行租户级数据隔离：
+所有 Agent Skill 在执行知识检索、证据检索、Text2SQL 查询和外部系统同步时必须强制执行租户级数据隔离。RAG 侧由 `tenant_scope + metadata filter` 在召回前硬过滤；Text2SQL 侧由 DataAccessPolicy、AST 校验和策略改写注入租户/组织/字段权限；外部同步侧由 Outbox 发布前校验 `client`、`org_id` 和审批记录。
 
 ```python
 # 每个Agent执行时的隔离中间件
@@ -2689,12 +2962,12 @@ class TenantIsolationMiddleware:
             del query["filters"]["client"]
         return query
 
-    def before_sql_execute(self, sql: str, client: Client) -> str:
-        """SQL查询：自动注入 WHERE client = '{client}' """
+    def before_text2sql_execute(self, request: dict, client: Client) -> dict:
+        """Text2SQL请求：注入 tenant_scope，最终SQL由Text2SQL Orchestrator策略改写"""
+        request["tenant_scope"]["client"] = client.value
         if client != Client.GROUP:
-            # 在WHERE子句中追加租户条件
-            sql = f"SELECT * FROM ({sql}) AS _sub WHERE client = '{client.value}'"
-        return sql
+            request["tenant_scope"]["org_ids"] = allowed_org_ids_for(client)
+        return request
 
     def before_es_search(self, query: dict, client: Client) -> dict:
         """ES搜索：路由到租户专用索引别名"""
@@ -2711,7 +2984,7 @@ class TenantIsolationMiddleware:
 |-------|----------|--------|
 | intake-agent | KB检索 + ES案例搜索 | `kb_search_intake` + `es_search_similar_cases` |
 | investigation-agent | KB检索 | `kb_search_investigation` |
-| analysis-agent | SQL数据查询 + ES证据检索 | `sql_data_query` + `es_evidence_search` |
+| analysis-agent | Text2SQL 只读数据查询 + RAG/ES证据检索 | `text2sql_execute_readonly` + `es_evidence_search` |
 | disposition-agent | KB法律检索 | `kb_search_disposition` |
 | enforcement-agent | A2A发送 + MDM同步 + OA推送 | 工具调用前校验 `client` 字段匹配 |
 
@@ -2737,21 +3010,22 @@ class TenantIsolationMiddleware:
 | 不涉及追责 | disposition-agent输出`requires_penalty=false` | 应对策略="风控部门跟进"；材料界面自动抓取所有智能体文件 |
 | 涉及追责 | disposition-agent输出`requires_penalty=true` | 同上 + 碳基守门完成后风控系统自动刷新 |
 
-### D.10 记忆架构(L1-L4)在Agent中的落地
+### D.10 上下文与记忆生命周期(L1-L4)在Agent中的落地
 
-架构 §8.14 定义的四层记忆在各Agent中的具体使用：
+架构 §8.14 和上下文工程文档定义的 L1-L4 在廉洁监察 Agent 中表示上下文和记忆的生命周期，不是四个 Agent 私有 Memory。运行时由 Context Builder 按需读取阶段交互、approved 案件事实和已发布组织知识来装配本次调用上下文；只有经过 HITL、闭环审核、脱敏和版本化的数据才会受控提升到长期记忆。
 
-| 记忆层 | intake-agent | investigation-agent | analysis-agent | disposition-agent | enforcement-agent |
-|--------|-------------|-------------------|----------------|------------------|------------------|
-| **L1 感知记忆** | 案件字段+附件文本+ASR结果 | 初判报告+案件上下文JSON | 多源数据+访谈记录+走访报告 | 案件结论+证据摘要 | 追责意见+碳基选择的执行动作 |
-| **L2 会话记忆** | 阶段内多轮守门对话 | 守门修改→重新生成 | 3轮LLM推理上下文 | 路径选择对话 | 文书修改对话 |
-| **L3 案例记忆** | 案件全流程状态(Checkpointer) | 调查方案+相似案例引用 | 证据链+结论+报告 | 法律路径+追责意见 | A2A任务+外部同步记录 |
-| **L4 组织记忆** | KB检索(制度+法规+组织) | KB检索(历史案例+业务系统) | KB检索(历史报告+模板) | KB检索(法律+处罚先例) | KB检索(模板+制度) |
+| 层级 | 主干 Stage Agent 用法 | 并行/轻量 Agent 用法 |
+|------|----------------------|----------------------|
+| **L1 调用上下文** | intake 本次调用看到案件字段、附件摘要、ASR/OCR；investigation 看到已确认初判；analysis 看到已确认调查方案、证据片段、访谈和 Text2SQL 摘要；disposition 看到已确认案件结论；enforcement 看到已确认追责动作 | post-report 本次调用看到外部问题清单和已确认案件材料；investigation-advisor 看到证据缺口和时间线；case-complexity-assessor 看到金额、人数、组织、证据类型等因子 |
+| **L2 阶段交互记忆** | 各阶段仅注入本阶段 HITL 修改、驳回原因、追问和重新生成意见；这些内容不自动成为案件事实 | 辅助 Agent 只读取人工采纳/修改后的建议状态，不读取被忽略建议作为事实 |
+| **L3 案件事实记忆** | Workflow Checkpointer、approved stage_output、`context_snapshot_id`、`knowledge_refs`、`evidence_refs`、`data_refs` 串联案件全流程 | post-report 读取全链路 approved refs；辅助 Agent 的建议以 advisory refs 记录，不覆盖主干案件事实 |
+| **L4 组织知识记忆** | 通过 RAG Orchestrator 检索已发布的制度、法规、历史案例、模板、处罚先例；通过 Text2SQL 只读引用数据口径和结果快照 | 复杂度规则、调查策略经验和报案资料指引先生成候选知识，人工审核、脱敏和版本化后进入知识库 |
 
-**L3→L4固化时机**：
-- 案件闭环后自动触发：调查报告→案例库、处置经验→规则库、缺陷模式→指标库
-- 高风险案件（涉及刑事/重大金额）需人工审核后入库
-- 每个Agent在COMPLETE状态后将其`downstream_context`写入PG供后续检索
+**L3→L4候选知识审核发布时机**：
+- 案件闭环后自动触发候选知识生成：调查报告→候选案例条目、处置经验→候选规则条目、缺陷模式→候选指标条目
+- 高风险案件（涉及刑事/重大金额）以及包含敏感主体的候选知识，必须人工审核、脱敏和版本化后才能入库
+- 每个 Stage Agent 在 COMPLETE 且 HITL 审批通过后，才将 approved `downstream_context`、`knowledge_refs`、`evidence_refs`、`data_refs` 和 `context_snapshot_id` 写入 PostgreSQL 供后续 Context Builder 检索；原始 AI 草稿不得默认进入下游上下文。
+- 每次超预算压缩都必须保留 `context_snapshot_refs`、`dropped_refs` 和 `context_quality`；若 P0/P1 材料被排除，Stage Agent 只能得到 `context_insufficient`，不能把压缩摘要当作完整事实继续推理。
 
 ### D.11 长耗时Agent进度推送机制
 
@@ -2777,8 +3051,8 @@ class AgentProgress:
 # 100% → 报告生成完成，进入守门
 
 # risk-analysis-agent 进度里程碑:
-# 0%   → 开始SQL批量执行
-# 30%  → SQL执行完成，开始AI初核
+# 0%   → 开始 Text2SQL 批量只读执行
+# 30%  → Text2SQL 执行完成，开始AI初核
 # 60%  → AI初核完成，开始主体合并
 # 80%  → 主体合并完成，开始风险定性
 # 100% → 风险定性+报告生成完成
@@ -2861,7 +3135,7 @@ class KBQualityMetrics:
 | `edge-05` | 同一供应商同时被3个案件举报 | risk-analysis-agent | 主体合并后标记为"高频风险主体"，建议升级优先级 |
 | `edge-06` | 案件涉及的制度法规已被废止 | disposition-agent | 法律检索时过滤"已废止"标记的文档，标注"法规已更新" |
 | `edge-07` | 处罚公告需要同时发OA(添可)+手动上传(集团/科沃斯) | enforcement-agent | 并行处理两路，各自独立成功/失败 |
-| `edge-08` | LLM上下文超过64K tokens（超长案件） | analysis-agent | 自动摘要压缩→分批多轮推理→合并结论 |
+| `edge-08` | LLM上下文超过64K tokens（超长案件） | analysis-agent | 结构化压缩→保留 refs/dropped_refs→通过 ContextCompressionGate 后分批推理；门禁失败则要求人工选择材料 |
 
 ```python
 # enforcement-agent COMPLETE 后自动触发
